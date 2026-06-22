@@ -87,3 +87,31 @@ public class ChargeGunKillPatch
         Plugin.BepinLogger.LogInfo($"Player killed with charge gun");
     }
 }
+
+[HarmonyPatch(typeof(BeamGun), "KillServer")]
+public class BeamGunKillPatch
+{
+    static void Postfix(BeamGun __instance)
+    {
+        Plugin.BepinLogger.LogInfo($"Player killed with beam gun");
+    }
+}
+
+[HarmonyPatch(typeof(ShrapnelBallistic), "SendKillLog")]
+public class ShrapnelKillPatch
+{
+    static void Postfix(ShrapnelBallistic __instance)
+    {
+        Plugin.BepinLogger.LogInfo($"Player killed with shrapnel");
+    }
+}
+
+[HarmonyPatch(typeof(PredictedProjectile), "SendKillLog")]
+public class PredictedProjectileKillPatch
+{
+    static void Postfix(PredictedProjectile __instance)
+    {
+        Plugin.BepinLogger.LogInfo($"Player killed with predicted projectile");
+    }
+}
+
