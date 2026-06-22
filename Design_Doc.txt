@@ -3,13 +3,10 @@ Goal, kill with every weapon
 Checks: kill with each weapon
 Item: ability to use each weapon 
 Deathlink will be enabled as an option
-All players start with pistols and stun weapons unlocked (tazers, stun grenades, stun mines) unlocked
+All players start with pistols and stun weapons unlocked (tazers, stun grenades, stun mines) unlocked, and all other weapons that cannot directly kill for some reason.
 First game is played on arena 0.
 
-host keeps a uint64 mask of collected items for all players.
-when player gets item, send it to host.
-when match starts, for each spawner, it randomly decides a player's weapon pool, and then randomly chooses a weapon from that list to spawn.
-when match starts, all weapon spawners are set to display a 3d model of the archipelago logo. the text when looking at it will say "Archipelago Weapon".
+when match starts, all weapon spawners are set to spawn a new weapon that looks like a 3d model of the archipelago logo. the text when looking at it will say "Archipelago Weapon".
 this weapon will be a weapon that one more than the highest weapon id.
 when you try to pick up the archipelago weapon, it gives you a random weapon from your unlocked weapon pool. setings can increase the rate at which you get weapons you have not gotten a kill with yet.
 there is ui that says if you have gotten a kill with a weapon yet.

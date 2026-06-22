@@ -12,7 +12,8 @@
           "Archipelago.MultiClient.Net": "6.6.0",
           "BepInEx.Core": "5.4.21",
           "Assembly-CSharp": "0.0.0.0",
-          "ComputerysModdingUtilities": "0.0.0.0"
+          "ComputerysModdingUtilities": "0.0.0.0",
+          "FishNet.Runtime": "0.0.0.0"
         },
         "runtime": {
           "Straftapelago.Finnegan_McD.org.dll": {}
@@ -215,6 +216,14 @@
           }
         }
       },
+      "FishNet.Runtime/0.0.0.0": {
+        "runtime": {
+          "FishNet.Runtime.dll": {
+            "assemblyVersion": "0.0.0.0",
+            "fileVersion": "0.0.0.0"
+          }
+        }
+      },
       "UnityEngine.UI/1.0.0.0": {
         "runtime": {
           "UnityEngine.UI.dll": {
@@ -242,14 +251,6 @@
       "Heathen.PhysKit/0.0.0.0": {
         "runtime": {
           "Heathen.PhysKit.dll": {
-            "assemblyVersion": "0.0.0.0",
-            "fileVersion": "0.0.0.0"
-          }
-        }
-      },
-      "FishNet.Runtime/0.0.0.0": {
-        "runtime": {
-          "FishNet.Runtime.dll": {
             "assemblyVersion": "0.0.0.0",
             "fileVersion": "0.0.0.0"
           }
@@ -319,6 +320,14 @@
           }
         }
       },
+      "GameKit.Utilities/0.0.0.0": {
+        "runtime": {
+          "GameKit.Utilities.dll": {
+            "assemblyVersion": "0.0.0.0",
+            "fileVersion": "0.0.0.0"
+          }
+        }
+      },
       "Heathen.Core/0.0.0.0": {
         "runtime": {
           "Heathen.Core.dll": {
@@ -340,14 +349,6 @@
           "Unity.Mathematics.dll": {
             "assemblyVersion": "1.0.0.0",
             "fileVersion": "1.0.0.0"
-          }
-        }
-      },
-      "GameKit.Utilities/0.0.0.0": {
-        "runtime": {
-          "GameKit.Utilities.dll": {
-            "assemblyVersion": "0.0.0.0",
-            "fileVersion": "0.0.0.0"
           }
         }
       },
@@ -512,6 +513,11 @@
       "serviceable": false,
       "sha512": ""
     },
+    "FishNet.Runtime/0.0.0.0": {
+      "type": "reference",
+      "serviceable": false,
+      "sha512": ""
+    },
     "UnityEngine.UI/1.0.0.0": {
       "type": "reference",
       "serviceable": false,
@@ -528,11 +534,6 @@
       "sha512": ""
     },
     "Heathen.PhysKit/0.0.0.0": {
-      "type": "reference",
-      "serviceable": false,
-      "sha512": ""
-    },
-    "FishNet.Runtime/0.0.0.0": {
       "type": "reference",
       "serviceable": false,
       "sha512": ""
@@ -577,6 +578,11 @@
       "serviceable": false,
       "sha512": ""
     },
+    "GameKit.Utilities/0.0.0.0": {
+      "type": "reference",
+      "serviceable": false,
+      "sha512": ""
+    },
     "Heathen.Core/0.0.0.0": {
       "type": "reference",
       "serviceable": false,
@@ -588,11 +594,6 @@
       "sha512": ""
     },
     "Unity.Mathematics/1.0.0.0": {
-      "type": "reference",
-      "serviceable": false,
-      "sha512": ""
-    },
-    "GameKit.Utilities/0.0.0.0": {
       "type": "reference",
       "serviceable": false,
       "sha512": ""
