@@ -1,0 +1,26 @@
+Archipelago straft 
+Goal, kill with every weapon
+Checks: kill with each weapon
+Item: ability to use each weapon 
+Deathlink will be enabled as an option
+All players start with pistols and stun weapons unlocked (tazers, stun grenades, stun mines) unlocked
+First game is played on arena 0.
+
+host keeps a uint64 mask of collected items for all players.
+when player gets item, send it to host.
+when match starts, for each spawner, it randomly decides a player's weapon pool, and then randomly chooses a weapon from that list to spawn.
+when match starts, all weapon spawners are set to display a 3d model of the archipelago logo. the text when looking at it will say "Archipelago Weapon".
+this weapon will be a weapon that one more than the highest weapon id.
+when you try to pick up the archipelago weapon, it gives you a random weapon from your unlocked weapon pool. setings can increase the rate at which you get weapons you have not gotten a kill with yet.
+there is ui that says if you have gotten a kill with a weapon yet.
+
+the archipelago terminal is piped into the in game chat.
+
+No dlc, no mods
+The lookup table for item to stage would need to be hard coded
+
+Straftoff 
+8 players, 4 teams, each in their own archipelago rooms. 
+2 players per team, one straft, one another single player game. 
+Deathlink enabled in each lobby. 
+Idea is that each straft player would be relying on their other player to support them, similar to something like the patrons in hunger games.
