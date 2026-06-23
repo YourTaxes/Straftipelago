@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using HarmonyLib;
 using UnityEngine;
 
@@ -27,9 +28,9 @@ public class ClaymoreKillPatch
 [HarmonyPatch(typeof(Shotgun), "KillServer")]
 public class ShotgunKillPatch
 {
-    static void Postfix(Shotgun __instance)
+    static void Postfix(ItemBehaviour ___behavior)
     {
-        Plugin.BepinLogger.LogInfo($"Player killed with shotgun");
+        Plugin.BepinLogger.LogInfo($"Player killed with {___behavior?.weaponName}");
     }
 }
 
@@ -38,7 +39,8 @@ public class MeleeKillPatch
 {
     static void Postfix(MeleeWeapon __instance)
     {
-        Plugin.BepinLogger.LogInfo($"Player killed with melee weapon");
+        
+        Plugin.BepinLogger.LogInfo($"Player killed with melee");
     }
 }
 
@@ -48,7 +50,7 @@ public class BubbleKillPatch
     static void Postfix(Bubble __instance)
     {
         //make bubble ramdomization an option in the yaml, considering it is extremely bugged
-        Plugin.BepinLogger.LogInfo($"Player killed with bubble");
+        Plugin.BepinLogger.LogInfo($"Player killed with Bublee");
     }
 }
 
@@ -93,7 +95,7 @@ public class BeamGunKillPatch
 {
     static void Postfix(BeamGun __instance)
     {
-        Plugin.BepinLogger.LogInfo($"Player killed with beam gun");
+        Plugin.BepinLogger.LogInfo($"Player killed with Beam gun");
     }
 }
 
@@ -102,16 +104,27 @@ public class ShrapnelKillPatch
 {
     static void Postfix(ShrapnelBallistic __instance)
     {
-        Plugin.BepinLogger.LogInfo($"Player killed with shrapnel");
+        ItemBehaviour behaviour = Traverse.Create(__instance).Field<ItemBehaviour>("behavior").Value;
+        Plugin.BepinLogger.LogInfo($"Player killed with {behaviour?.weaponName}");
     }
 }
 
 [HarmonyPatch(typeof(PredictedProjectile), "SendKillLog")]
 public class PredictedProjectileKillPatch
 {
-    static void Postfix(PredictedProjectile __instance)
+    static void Postfix(GameObject ___weapon)
     {
-        Plugin.BepinLogger.LogInfo($"Player killed with predicted projectile");
+        ItemBehaviour behaviour = ___weapon?.GetComponent<ItemBehaviour>();
+        Plugin.BepinLogger.LogInfo($"Player killed with {behaviour?.weaponName}");
     }
 }
 
+[HarmonyPatch(typeof(Gun), "KillServer")]
+public class GunKillPatch
+{
+    static void Postfix(Gun __instance)
+    {
+        ItemBehaviour behaviour = Traverse.Create(__instance).Field<ItemBehaviour>("behaviour").Value;
+        Plugin.BepinLogger.LogInfo($"Player killed with {behaviour?.weaponName}");
+    }
+}
