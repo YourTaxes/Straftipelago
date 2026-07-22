@@ -4,17 +4,36 @@ using UnityEngine;
 
 namespace Straftapelago.Finnegan_McD.org.Patches;
 
-[HarmonyPatch(typeof(PlayerPickup), "RightHandPickup")]
-public class PickupPatches
+
+
+[HarmonyPatch(typeof(ItemBehaviour), "OnGrab")]
+public class GrabPatches
 {
-    static void Postfix(PlayerPickup __instance)
+    static void Postfix(ItemBehaviour __instance)
     {
-        Plugin.BepinLogger.LogInfo("RightHandPickup called");
+        Plugin.BepinLogger.LogInfo("OnGrab called on weapon " + __instance.weaponName);
+        //have this modify the player pickup script, and make it do code nearly identical to the switch weapons script
+        //this script shows how weapons are set in a person's hand.
     }
 }
 
+[HarmonyPatch(typeof(ItemBehaviour), "KillAnimation")]
+public class KillAnimationPatches
+{
+    static void Postfix(ItemBehaviour __instance)
+    {
+        Plugin.BepinLogger.LogInfo("KillAnimation called on weapon " + __instance.weaponName);
+    }
+}
 
-
+// [HarmonyPatch(typeof(PlayerPickup), "HandleAboubiGrab")]
+// public class HandleAboubiGrabPatches
+// {
+//     static void Postfix(PlayerPickup __instance)
+//     {
+//         Plugin.BepinLogger.LogInfo("grabbed aboubi");
+//     }
+// }
 
 [HarmonyPatch(typeof(Claymore), "SendKillLog")]
 public class ClaymoreKillPatch
