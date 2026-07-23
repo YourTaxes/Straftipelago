@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.IO;
 using System.Runtime.CompilerServices;
 using BepInEx;
 using BepInEx.Logging;
@@ -28,6 +29,7 @@ public class Plugin : BaseUnityPlugin
     private const string APDisplayInfo = $"Archipelago v{ArchipelagoClient.APVersion}";
     public static ManualLogSource BepinLogger;
     public static ArchipelagoClient ArchipelagoClient;
+    public static GameObject RouletteItemPrefab;
 
     private void Awake()
     {
@@ -35,6 +37,25 @@ public class Plugin : BaseUnityPlugin
         // Plugin startup logic
         BepinLogger = Logger;
         BepinLogger.LogInfo("Mod Started - this is the print statement");
+
+        using (Stream stream = typeof(Plugin).Assembly.GetManifestResourceStream(
+            "Straftapelago.Finnegan_McD.org.AssetBundles.roulette_item_bundle"))
+        {
+            if (stream != null)
+            {
+                byte[] data = new byte[stream.Length];
+                stream.Read(data, 0, data.Length);
+                AssetBundle bundle = AssetBundle.LoadFromMemory(data);
+                if (bundle != null)
+                    RouletteItemPrefab = bundle.LoadAsset<GameObject>("Roulette_Item");
+                else
+                    BepinLogger.LogError("Failed to load asset bundle from embedded resource");
+            }
+            else
+            {
+                BepinLogger.LogError("Embedded resource 'roulette_item_bundle' not found");
+            }
+        }
         ArchipelagoClient = new ArchipelagoClient();
         ArchipelagoConsole.Awake();
         new Harmony(PluginGUID).PatchAll();

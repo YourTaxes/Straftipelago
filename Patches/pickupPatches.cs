@@ -4,7 +4,30 @@ using UnityEngine;
 
 namespace Straftapelago.Finnegan_McD.org.Patches;
 
+[HarmonyPatch(typeof(FirstPersonController), "Awake")]
+public class FirstPersonControllerAwakePatch
+{
+    static void Postfix(FirstPersonController __instance)
+    {
+        Plugin.BepinLogger.LogInfo("FirstPersonController Awake called");
+        if (Plugin.RouletteItemPrefab == null) return;
 
+        Vector3 spawnPos = __instance.transform.position + __instance.transform.forward * 5f;
+        GameObject spawned = Object.Instantiate(Plugin.RouletteItemPrefab, spawnPos, Quaternion.identity);
+        spawned.AddComponent<ItemBehaviour>();
+        spawned.AddComponent<BoxCollider>();
+        spawned.AddComponent<Rigidbody>();
+
+        Shader standardShader = Shader.Find("Standard");
+        foreach (Renderer renderer in spawned.GetComponentsInChildren<Renderer>())
+        {
+            foreach (Material mat in renderer.materials)
+            {
+                mat.shader = standardShader;
+            }
+        }
+    }
+}
 
 [HarmonyPatch(typeof(ItemBehaviour), "OnGrab")]
 public class GrabPatches

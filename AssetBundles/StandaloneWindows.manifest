@@ -1,0 +1,7 @@
+ManifestFileVersion: 0
+CRC: 2600553752
+AssetBundleManifest:
+  AssetBundleInfos:
+    Info_0:
+      Name: roulette_item_bundle
+      Dependencies: {}

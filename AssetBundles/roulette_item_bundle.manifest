@@ -1,0 +1,31 @@
+ManifestFileVersion: 0
+CRC: 2089553451
+Hashes:
+  AssetFileHash:
+    serializedVersion: 2
+    Hash: 7fa004b0acf500f64296af8ad655db67
+  TypeTreeHash:
+    serializedVersion: 2
+    Hash: 2a5462f6469bfcda6f45ec777210a20e
+HashAppended: 0
+ClassTypes:
+- Class: 1
+  Script: {instanceID: 0}
+- Class: 4
+  Script: {instanceID: 0}
+- Class: 21
+  Script: {instanceID: 0}
+- Class: 23
+  Script: {instanceID: 0}
+- Class: 33
+  Script: {instanceID: 0}
+- Class: 43
+  Script: {instanceID: 0}
+- Class: 48
+  Script: {instanceID: 0}
+- Class: 65
+  Script: {instanceID: 0}
+SerializeReferenceClassIdentifiers: []
+Assets:
+- Assets/Roulette_Item.prefab
+Dependencies: []
