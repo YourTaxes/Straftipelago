@@ -1,12 +1,15 @@
 ManifestFileVersion: 0
-CRC: 2922868585
+CRC: 3098618137
 Hashes:
   AssetFileHash:
     serializedVersion: 2
-    Hash: 3feb8f9b1831aae2ce09ffa88d49c3fd
+    Hash: cba2e4f6fd2541d215551382b8fdec85
   TypeTreeHash:
     serializedVersion: 2
-    Hash: 2a5462f6469bfcda6f45ec777210a20e
+    Hash: a3954d9da6324b836c32a89fa85d00a9
+  IncrementalBuildHash:
+    serializedVersion: 2
+    Hash: cba2e4f6fd2541d215551382b8fdec85
 HashAppended: 0
 ClassTypes:
 - Class: 1
@@ -28,4 +31,5 @@ ClassTypes:
 SerializeReferenceClassIdentifiers: []
 Assets:
 - Assets/Roulette_Item.prefab
+- Assets/S_WeaponOutline_00.shader
 Dependencies: []

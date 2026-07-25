@@ -39,7 +39,7 @@ public class Plugin : BaseUnityPlugin
         BepinLogger.LogInfo("Mod Started - this is the print statement");
 
         using (Stream stream = typeof(Plugin).Assembly.GetManifestResourceStream(
-            "Straftapelago.Finnegan_McD.org.AssetBundles.roulette_item_bundle"))
+            "Straftapelago.Finnegan_McD.org.AssetBundles.roulette_item"))
         {
             if (stream != null)
             {
@@ -47,13 +47,20 @@ public class Plugin : BaseUnityPlugin
                 stream.Read(data, 0, data.Length);
                 AssetBundle bundle = AssetBundle.LoadFromMemory(data);
                 if (bundle != null)
-                    RouletteItemPrefab = bundle.LoadAsset<GameObject>("Roulette_Item");
+                {
+                    RouletteItemPrefab = bundle.LoadAsset<GameObject>("roulette_item");
+                    if (RouletteItemPrefab == null)
+                    {
+                        BepinLogger.LogError("Asset 'roulette_item' not found in bundle. Assets present: " +
+                            string.Join(", ", bundle.GetAllAssetNames()));
+                    }
+                }
                 else
                     BepinLogger.LogError("Failed to load asset bundle from embedded resource");
             }
             else
             {
-                BepinLogger.LogError("Embedded resource 'roulette_item_bundle' not found");
+                BepinLogger.LogError("Embedded resource 'roulette_item' not found");
             }
         }
         ArchipelagoClient = new ArchipelagoClient();

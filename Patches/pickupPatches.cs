@@ -11,29 +11,21 @@ public class FirstPersonControllerAwakePatch
     static void Postfix(FirstPersonController __instance)
     {
         Plugin.BepinLogger.LogInfo("FirstPersonController Awake called");
-        if (Plugin.RouletteItemPrefab == null) return;
+        if (Plugin.RouletteItemPrefab == null) 
+        {
+            Plugin.BepinLogger.LogError("RouletteItemPrefab is null");
+            return;
+        }
 
         Vector3 spawnPos = __instance.transform.position + __instance.transform.forward * 5f;
         GameObject spawned = Object.Instantiate(Plugin.RouletteItemPrefab, spawnPos, Quaternion.identity);
-        Weapon weaponComponent = spawned.GetComponent<WeaponHandSpawner>();
+        //Weapon weaponComponent = spawned.GetComponent<WeaponHandSpawner>();
+        spawned.AddComponent<CreateColors>();
         ItemBehaviour itemBehaviour = spawned.AddComponent<ItemBehaviour>();
         itemBehaviour.weaponName = "Roulette Item";
 
-        spawned.AddComponent<BoxCollider>();
+        //spawned.AddComponent<BoxCollider>();
         spawned.AddComponent<Rigidbody>();
-
-        Shader weaponShader = Shader.Find("S_WeaponOutline_00");
-        foreach (Renderer renderer in spawned.GetComponentsInChildren<Renderer>())
-        {
-            foreach (Material mat in renderer.materials)
-            {
-                Color savedColor = mat.HasProperty("_BaseColor") ? mat.GetColor("_BaseColor")
-                                 : mat.HasProperty("_Color")     ? mat.GetColor("_Color")
-                                 : Color.white;
-                mat.shader = weaponShader;
-                if (mat.HasProperty("_Color")) mat.SetColor("_Color", savedColor);
-            }
-        }
     }
 }
 
