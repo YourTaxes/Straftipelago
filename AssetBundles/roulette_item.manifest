@@ -1,15 +1,15 @@
 ManifestFileVersion: 0
-CRC: 3729166317
+CRC: 3843571020
 Hashes:
   AssetFileHash:
     serializedVersion: 2
-    Hash: 26ed497e1bfd4997533e2d5af0e907a0
+    Hash: 0e6f45a458b3b62010d06e1cd9369727
   TypeTreeHash:
     serializedVersion: 2
-    Hash: a3954d9da6324b836c32a89fa85d00a9
+    Hash: fc646995ce3687ed3c88ea1b6d9395ab
   IncrementalBuildHash:
     serializedVersion: 2
-    Hash: 26ed497e1bfd4997533e2d5af0e907a0
+    Hash: 0e6f45a458b3b62010d06e1cd9369727
 HashAppended: 0
 ClassTypes:
 - Class: 1
@@ -26,9 +26,23 @@ ClassTypes:
   Script: {instanceID: 0}
 - Class: 48
   Script: {instanceID: 0}
+- Class: 54
+  Script: {instanceID: 0}
 - Class: 65
   Script: {instanceID: 0}
-SerializeReferenceClassIdentifiers: []
+- Class: 114
+  Script: {fileID: 1201363339, guid: b67f04edd418ad14eacefc17688c6bc6, type: 3}
+- Class: 114
+  Script: {fileID: 11500000, guid: bf7aabf8e4b54e74ba52ecdb8b7d000f, type: 3}
+- Class: 114
+  Script: {fileID: 11500000, guid: bc64c55a9698a584fa105fe10be5ace6, type: 3}
+- Class: 114
+  Script: {fileID: 11500000, guid: 74e805de539c8fb449904d9fcd8f8a3e, type: 3}
+- Class: 115
+  Script: {instanceID: 0}
+SerializeReferenceClassIdentifiers:
+- AssemblyName: FishNet.Runtime
+  ClassName: FishNet.Object.TransformProperties
 Assets:
 - Assets/Roulette_Item.prefab
 - Assets/S_WeaponOutline_00.shader
