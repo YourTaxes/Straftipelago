@@ -17,10 +17,28 @@ public class CreateColors : MonoBehaviour
 
     void Start()
     {
-        int index = 0;
         Shader weaponShader = Shader.Find("S_WeaponOutline_00");
         foreach (Renderer renderer in GetComponentsInChildren<Renderer>())
         {
+            string prefix = renderer.name.Length >= 3 ? renderer.name.Substring(0, 3) : "";
+            int colorIndex = prefix switch
+            {
+                "Bas" => 0,
+                "Org" => 1,
+                "Red" => 2,
+                "Grn" => 3,
+                "Pur" => 4,
+                "Blu" => 5,
+                "Yel" => 6,
+                _ => -1
+            };
+
+            if (colorIndex == -1)
+            {
+                Plugin.BepinLogger.LogWarning($"Renderer '{renderer.name}' does not start with a recognized color prefix.");
+                continue;
+            }
+
             foreach (Material mat in renderer.materials)
             {
                 mat.shader = weaponShader;
@@ -28,11 +46,10 @@ public class CreateColors : MonoBehaviour
                 if (mat.HasProperty("_BC"))
                 {
                     Texture2D texture = new Texture2D(1, 1);
-                    texture.SetPixel(0, 0, Colors[index % Colors.Length]);
+                    texture.SetPixel(0, 0, Colors[colorIndex]);
                     texture.Apply();
                     mat.SetTexture("_BC", texture);
                 }
-                index++;
             }
         }
     }
