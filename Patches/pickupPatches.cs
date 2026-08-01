@@ -194,26 +194,43 @@ public class RightHandPickupPatch
         if (hitObj == null || hitObj.GetComponent<Weapon>() != null) return true;
         ItemBehaviour ib = hitObj.GetComponent<ItemBehaviour>();
         if (ib?.weaponName != "Roulette Item") return true;
+        
+        __instance.LeftHandDrop();
+        __instance.RightHandDrop();
+        Plugin.BepinLogger.LogInfo("Picked up Roulette Item");
+        // AudioClip pickupClip = t.Field("pickupClip").GetValue<AudioClip>();
 
-        AudioClip pickupClip = t.Field("pickupClip").GetValue<AudioClip>();
-
-        if (!__instance.sync___get_value_hasObjectInHand() && hitObj.layer == 7)
-        {
-            SoundManager.Instance.PlaySound(pickupClip);
-            t.Method("sync___set_value_objInHand", hitObj, true).GetValue();
-            t.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
-            DoSingleHandPickup(__instance, t, ib, cam);
-        }
-        else if (__instance.sync___get_value_hasObjectInHand())
-        {
-            SoundManager.Instance.PlaySound(pickupClip);
-            t.Method("RightHandDrop").GetValue();
-            t.Method("sync___set_value_objInHand", hitObj, true).GetValue();
-            t.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
-            DoSingleHandPickup(__instance, t, ib, cam);
-        }
+        // if (!__instance.sync___get_value_hasObjectInHand() && hitObj.layer == 7)
+        // {
+        //     SoundManager.Instance.PlaySound(pickupClip);
+        //     t.Method("sync___set_value_objInHand", hitObj, true).GetValue();
+        //     t.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
+        //     DoSingleHandPickup(__instance, t, ib, cam);
+        // }
+        // else if (__instance.sync___get_value_hasObjectInHand())
+        // {
+        //     SoundManager.Instance.PlaySound(pickupClip);
+        //     t.Method("RightHandDrop").GetValue();
+        //     t.Method("sync___set_value_objInHand", hitObj, true).GetValue();
+        //     t.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
+        //     DoSingleHandPickup(__instance, t, ib, cam);
+        // }
 
         return false;
+    }
+}
+
+[HarmonyPatch(typeof(Gun), "Update")]
+public class RouletteGunUpdatePatch
+{
+    // The Roulette Item binds to the game's real Gun component (via the assetbundle's
+    // stub script) so vanilla pickup/hold logic works, but none of Gun/Weapon's private
+    // fields (fpArms, playerController, pauseManager, etc.) get wired up like a normal
+    // spawned weapon, so its Update/WeaponUpdate NREs every frame. Skip it entirely.
+    static bool Prefix(Gun __instance)
+    {
+        ItemBehaviour ib = __instance.GetComponent<ItemBehaviour>();
+        return ib == null || ib.weaponName != "Roulette Item";
     }
 }
 
