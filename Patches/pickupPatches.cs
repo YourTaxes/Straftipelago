@@ -1,3 +1,4 @@
+ using System.Linq;
 using System.Runtime.CompilerServices;
 using DG.Tweening;
 using FishNet.Managing.Object;
@@ -6,6 +7,8 @@ using HarmonyLib;
 using UnityEngine;
 
 namespace Straftapelago.Finnegan_McD.org.Patches;
+
+
 
 [HarmonyPatch(typeof(FirstPersonController), "Awake")]
 public class FirstPersonControllerAwakePatch
@@ -33,6 +36,24 @@ public class FirstPersonControllerAwakePatch
         FishNet.InstanceFinder.ServerManager.Spawn(spawned);
     }
 }
+
+//NEED TO USE THE Player pickup right hand positions to dictate where the item will be.
+
+// [HarmonyPatch(typeof(PlayerPickup), "OnStartClient")]
+// public class PlayerPickupOnStartClientPatch
+// {
+//     static bool Prefix(PlayerPickup __instance)
+//     {
+//         Transform[] pickupPositionRightHand = Traverse.Create(__instance).Field("pickupPositionRightHand").GetValue<Transform[]>();
+
+//         GameObject rouletteRight = new("Roulette Right");
+//         rouletteRight.transform.SetParent(pickupPositionRightHand[0], false);
+//         rouletteRight.transform.localPosition = Vector3.zero; // TODO: set desired local position/rotation
+//         rouletteRight.AddComponent<ItemPosition>();
+//         Plugin.BepinLogger.LogInfo("Added ItemPosition to Roulette Right");
+//         return true;
+//     }
+// }
 
 [HarmonyPatch(typeof(ItemBehaviour), "OnGrab")]
 public class GrabPatches
@@ -130,6 +151,7 @@ public class StartPatches
     static void Prefix(ItemBehaviour __instance)
     {
         if (__instance.weaponName != "Roulette Item") return;
+        //Remove later when it spawns on the item spawner
         Traverse.Create(__instance).Field("dispenserStart").SetValue(true);
     }
 
@@ -139,6 +161,18 @@ public class StartPatches
         if (__instance.weaponName == "Roulette Item")
         {
             Plugin.BepinLogger.LogInfo("Roulette Item Start called");
+
+            Sprite sprintCrosshair = Resources.FindObjectsOfTypeAll<Sprite>()
+                .FirstOrDefault(s => s.name == "Straftat_Crosshair03_1");
+            Sprite standCrosshair = Resources.FindObjectsOfTypeAll<Sprite>()
+                .FirstOrDefault(s => s.name == "Straftat_Crosshair02_0");
+            if (sprintCrosshair == null || standCrosshair == null)
+            {
+                Plugin.BepinLogger.LogError($"Roulette Item crosshair sprites not found (sprint: {sprintCrosshair != null}, stand: {standCrosshair != null})");
+            }
+            Traverse.Create(__instance).Field("sprintCrosshair").SetValue(sprintCrosshair);
+            Traverse.Create(__instance).Field("standCrosshair").SetValue(standCrosshair);
+
             var allMaterials = new System.Collections.Generic.List<Material>();
             int counter = 0;
             Plugin.BepinLogger.LogInfo($"Renderer length is {__instance.GetComponentsInChildren<Renderer>().Length}");
@@ -220,6 +254,8 @@ public class RightHandPickupPatch
     }
 }
 
+
+
 [HarmonyPatch(typeof(Gun), "Update")]
 public class RouletteGunUpdatePatch
 {
@@ -248,7 +284,9 @@ public class PlayerPickupUpdatePatch
         ItemBehaviour ib = objInHand.GetComponent<ItemBehaviour>();
         if (ib == null || ib.weaponName != "Roulette Item") return true;
 
-        // weaponInHand is null because roulette item has no Weapon component — run Update manually
+        // weaponInHand IS set (the roulette item's assetbundle-bound Gun component), but none of
+        // Gun/Weapon's fields (fpArms, camAnimScript, etc.) are wired up like a real weapon, so
+        // vanilla RightHandFix/LeftHandFix would NRE dereferencing them — run Update manually instead.
         t.Method("UpdateIKPoistion").GetValue();
 
         if (!__instance.IsOwner) return false;
