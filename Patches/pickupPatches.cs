@@ -400,3 +400,18 @@ public class FirstPersonControllerAwakePatch
 //     this.SpawnWeapon(this.item);
 //     yield break;
 // }
+
+
+
+/*
+Plan for putting random item into player's hand 
+1. roulette item will be single hand.
+2. on pickup, it will do the method for throwing the gun away for being out of ammo,
+    freeing up the hand that held the item. Save which hand is th eone with the item. 
+3. then, create the random item as a gameobject, instantiate it, and then do the pickup code 
+    after the raycast, and just have the hit object be the new item. 
+4. if the item that was spawned was a 2 handed weapon and the player was already holding something, 
+    then it will not do this, and just spawn the 2 handed weapon on the ground in front of the player.
+5. because the out of ammo code is what is run, then the roulette item should be destroyed when it is thrown.
+
+*/
