@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace Straftapelago.Finnegan_McD.org;
 
-public class CreateColors : MonoBehaviour
+public static class CreateColors
 {
     private static readonly Color[] Colors = new Color[]
     {
@@ -15,10 +15,10 @@ public class CreateColors : MonoBehaviour
         new Color(0.5647059f, 0.4470588f, 0.07843138f, 1.0f), // yellow
     };
 
-    void Start()
+    public static void Apply(GameObject root)
     {
         Shader weaponShader = Shader.Find("S_WeaponOutline_00");
-        foreach (Renderer renderer in GetComponentsInChildren<Renderer>())
+        foreach (Renderer renderer in root.GetComponentsInChildren<Renderer>())
         {
             string prefix = renderer.name.Length >= 3 ? renderer.name.Substring(0, 3) : "";
             int colorIndex = prefix switch

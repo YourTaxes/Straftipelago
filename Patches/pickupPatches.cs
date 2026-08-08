@@ -18,6 +18,21 @@ public class ItemSpawnerStartPatch
     static void Prefix(ItemSpawner __instance)
     {
         Plugin.BepinLogger.LogInfo("ItemSpawner Start called");
+
+        // Register the AssetBundle-loaded roulette prefab with FishNet's spawnable
+        // prefab table. Must run on every peer (host AND clients), not just the
+        // server: each machine resolves incoming spawn messages against its own
+        // local copy of this table, and this prefab was never part of the game's
+        // build-time registration since it's loaded at runtime from our bundle.
+        // checkForDuplicates makes this safe to call from every ItemSpawner.Start().
+        NetworkObject rouletteNob = Plugin.RouletteItemPrefab.GetComponent<NetworkObject>();
+        PrefabObjects spawnables = FishNet.InstanceFinder.NetworkManager?.SpawnablePrefabs;
+        if (rouletteNob != null && spawnables != null)
+        {
+            spawnables.AddObject(rouletteNob, true);
+            Plugin.BepinLogger.LogInfo($"Roulette Item prefab registered: PrefabId={rouletteNob.PrefabId}, CollectionId={rouletteNob.SpawnableCollectionId}");
+        }
+
         if (!FishNet.InstanceFinder.IsServer) return;
 
         // Spawn the roulette item at the item spawner's position
@@ -99,6 +114,8 @@ public class StartPatches
             Traverse.Create(__instance).Field("sprintCrosshair").SetValue(sprintCrosshair);
             Traverse.Create(__instance).Field("standCrosshair").SetValue(standCrosshair);
 
+            CreateColors.Apply(__instance.gameObject);
+
             var allMaterials = new System.Collections.Generic.List<Material>();
             int counter = 0;
             Plugin.BepinLogger.LogInfo($"Renderer length is {__instance.GetComponentsInChildren<Renderer>().Length}");
@@ -107,7 +124,7 @@ public class StartPatches
                 foreach (Material mat in renderer.materials)
                 {
                     counter++;
-                    //Plugin.BepinLogger.LogInfo($"Material {counter}: {mat.name}, Renderer: {renderer.name}, Shader: {mat.shader.name}");
+                    Plugin.BepinLogger.LogInfo($"Material {counter}: {mat.name}, Renderer: {renderer.name}, Shader: {mat.shader.name}");
                     allMaterials.Add(mat);
                 }
             }
