@@ -1,0 +1,141 @@
+using System;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using DG.Tweening;
+using FishNet.Managing.Object;
+using FishNet.Object;
+using HarmonyLib;
+using UnityEngine;
+
+namespace Straftapelago.Finnegan_McD.org.Patches;
+
+[HarmonyPatch(typeof(ItemBehaviour), "KillAnimation")]
+public class KillAnimationPatches
+{
+    static void Postfix(ItemBehaviour __instance)
+    {
+        Plugin.BepinLogger.LogInfo("KillAnimation called on weapon " + __instance.weaponName);
+    }
+}
+
+// [HarmonyPatch(typeof(PlayerPickup), "HandleAboubiGrab")]
+// public class HandleAboubiGrabPatches
+// {
+//     static void Postfix(PlayerPickup __instance)
+//     {
+//         Plugin.BepinLogger.LogInfo("grabbed aboubi");
+//     }
+// }
+
+[HarmonyPatch(typeof(Claymore), "SendKillLog")]
+public class ClaymoreKillPatch
+{
+    static void Postfix(Claymore __instance)
+    {
+        Plugin.BepinLogger.LogInfo($"Player killed with claymore");
+    }
+}
+
+[HarmonyPatch(typeof(Shotgun), "KillServer")]
+public class ShotgunKillPatch
+{
+    static void Postfix(ItemBehaviour __instance)
+    {
+        Plugin.BepinLogger.LogInfo($"Player killed with {__instance?.weaponName}");
+    }
+}
+
+[HarmonyPatch(typeof(MeleeWeapon), "KillServer")]
+public class MeleeKillPatch
+{
+    static void Postfix(MeleeWeapon __instance)
+    {
+        
+        Plugin.BepinLogger.LogInfo($"Player killed with melee");
+    }
+}
+
+[HarmonyPatch(typeof(Bubble), "SendKillLog")]
+public class BubbleKillPatch
+{
+    static void Postfix(Bubble __instance)
+    {
+        //make bubble ramdomization an option in the yaml, considering it is extremely bugged
+        Plugin.BepinLogger.LogInfo($"Player killed with Bublee");
+    }
+}
+
+[HarmonyPatch(typeof(Minigun), "KillServer")]
+public class MinigunKillPatch
+{
+    static void Postfix(Minigun __instance)
+    {
+        Plugin.BepinLogger.LogInfo($"Player killed with minigun");
+    }
+}
+
+[HarmonyPatch(typeof(PhysicsGrenade), "SendKillLog")]
+public class GrenadeKillPatch
+{
+    static void Postfix(PhysicsGrenade __instance)
+    {
+        Plugin.BepinLogger.LogInfo($"Player killed with grenade");
+    }
+}
+
+[HarmonyPatch(typeof(Obus), "SendKillLog")]
+public class ObusKillPatch
+{
+    static void Postfix(Obus __instance)
+    {
+        Plugin.BepinLogger.LogInfo($"Player killed with obus");
+    }
+}
+
+[HarmonyPatch(typeof(ChargeGun), "KillServer")]
+public class ChargeGunKillPatch
+{
+    static void Postfix(ChargeGun __instance)
+    {
+        Plugin.BepinLogger.LogInfo($"Player killed with charge gun");
+    }
+}
+
+[HarmonyPatch(typeof(BeamGun), "KillServer")]
+public class BeamGunKillPatch
+{
+    static void Postfix(BeamGun __instance)
+    {
+        Plugin.BepinLogger.LogInfo($"Player killed with Beam gun");
+    }
+}
+
+[HarmonyPatch(typeof(ShrapnelBallistic), "SendKillLog")]
+public class ShrapnelKillPatch
+{
+    static void Postfix(ShrapnelBallistic __instance)
+    {
+        ItemBehaviour behaviour = Traverse.Create(__instance).Field<ItemBehaviour>("behavior").Value;
+        Plugin.BepinLogger.LogInfo($"Player killed with {behaviour?.weaponName}");
+    }
+}
+
+[HarmonyPatch(typeof(PredictedProjectile), "SendKillLog")]
+public class PredictedProjectileKillPatch
+{
+    static void Postfix(GameObject ___weapon)
+    {
+        ItemBehaviour behaviour = ___weapon?.GetComponent<ItemBehaviour>();
+        Plugin.BepinLogger.LogInfo($"Player killed with {behaviour?.weaponName}");
+    }
+}
+
+[HarmonyPatch(typeof(Gun), "KillServer")]
+public class GunKillPatch
+{
+    static void Postfix(Gun __instance)
+    {
+        ItemBehaviour behaviour = Traverse.Create(__instance).Field<ItemBehaviour>("behaviour").Value;
+        Plugin.BepinLogger.LogInfo($"Player killed with {behaviour?.weaponName}");
+    }
+}
