@@ -65,8 +65,40 @@ public class GrabPatches
     static void Postfix(ItemBehaviour __instance)
     {
         Plugin.BepinLogger.LogInfo("OnGrab called on weapon " + __instance.weaponName);
-        //have this modify the player pickup script, and make it do code nearly identical to the switch weapons script
-        //this script shows how weapons are set in a person's hand.
+
+        if (__instance.weaponName != "Roulette Item") return;
+        if (!FishNet.InstanceFinder.IsServer) return;
+
+        SpawnerManager.PopulateAllWeapons();
+        GameObject[] allWeapons = SpawnerManager.AllWeapons;
+        if (allWeapons == null || allWeapons.Length == 0)
+        {
+            Plugin.BepinLogger.LogError("SpawnerManager.AllWeapons is empty; cannot roll a random weapon for Roulette Item");
+            return;
+        }
+
+        int randomIndex = UnityEngine.Random.Range(0, allWeapons.Length);
+        GameObject weaponPrefab = allWeapons[randomIndex];
+        if (weaponPrefab == null) return;
+
+        Transform playerTransform = __instance.rootObject.transform;
+        Vector3 spawnPos = playerTransform.position + playerTransform.forward * 5f;
+        GameObject spawned = UnityEngine.Object.Instantiate(weaponPrefab, spawnPos, Quaternion.identity);
+
+        // This weapon has no parent transform (unlike ItemSpawner.Spawn(), which instantiates
+        // as a child of the spawner). ItemBehaviour.Start()'s idle-bob tween dereferences
+        // transform.parent.up when dispenserStart is false, which NREs with no parent.
+        // Forcing dispenserStart true (same flag DispenserDrop() sets for ejected items)
+        // skips that tween and matches this item's actual "dispensed into the world" state.
+        ItemBehaviour spawnedBehaviour = spawned.GetComponent<ItemBehaviour>();
+        if (spawnedBehaviour != null)
+        {
+            Traverse.Create(spawnedBehaviour).Field("dispenserStart").SetValue(true);
+        }
+
+        FishNet.InstanceFinder.ServerManager.Spawn(spawned);
+
+        Plugin.BepinLogger.LogInfo($"Roulette Item rolled weapon [{randomIndex}]: {weaponPrefab.name}");
     }
 }
 
@@ -84,6 +116,9 @@ public class OnDropPatch
         rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
         rb.drag = 0f;
         rb.interpolation = RigidbodyInterpolation.Interpolate;
+        // Vanilla OnDrop() assigns this private field; since we skip the vanilla body (return false)
+        // it never gets set, leaving Update()'s "tempRb == null" perpetual transform.Rotate() active forever.
+        t.Field("tempRb").SetValue(rb);
         float ejectForce = t.Field<float>("ejectForce").Value;
         float torqueForce = t.Field<float>("torqueForce").Value;
         rb.AddForce(tempCam.transform.forward * ejectForce, ForceMode.Impulse);
@@ -130,7 +165,7 @@ public class StartPatches
             }
             Traverse.Create(__instance).Field("hoveredObjectMat").SetValue(allMaterials);
             Plugin.BepinLogger.LogInfo("Roulette Item materials set");
-        }        
+        }
     }
 }
 
