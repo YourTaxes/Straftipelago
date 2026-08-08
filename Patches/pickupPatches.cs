@@ -467,3 +467,11 @@ Plan for putting random item into player's hand
 5. because the out of ammo code is what is run, then the roulette item should be destroyed when it is thrown.
 
 */
+
+/*
+Plan for choosing random item
+1. each player has a list instance of gameobjects that they can randomly get.
+2. every time they earn a new weapon, it is simpily added to the list.
+3. when a roulette item is picked up it will choose the weapon from the list with the random(0, item_list.length)
+4. the item is spawned in the player's hand using thr mehod from above. 
+*/
