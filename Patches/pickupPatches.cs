@@ -103,7 +103,7 @@ public class GrabPatches
 }
 
 
-[HarmonyPatch(typeof(ItemBehaviour), "OnDrop")]
+[HarmonyPatch(typeof(ItemBehaviour), "OnsDrop")]
 public class OnDropPatch
 {
     static bool Prefix(ItemBehaviour __instance, Camera tempCam)
@@ -457,16 +457,28 @@ public class FirstPersonControllerAwakePatch
 
 /*
 Plan for putting random item into player's hand 
-1. roulette item will be single hand.
-2. on pickup, it will do the method for throwing the gun away for being out of ammo,
-    freeing up the hand that held the item. Save which hand is th eone with the item. 
-3. then, create the random item as a gameobject, instantiate it, and then do the pickup code 
+1. the starting ammo for the weapon will be 1, and it will have it's Gun component's base.inHandDespawn set to false, noAmmoClicks is set to 1,
+    so that when the item has no ammo, it will not despawn immedietly in the player's hand, so that when it is on the ground it can finish running the code
+    for setting the player's weapon in their hand.
+2a. then save the reference to the hand that the gun is in now, so after it is dropped, it can still modify it.
+2b. at the end of onGrab, it will set the gun's ammo to -1 and call Gun.Fire(), so that after a set amount of time, it will despawn the item 
+    using vanilla methods. 
+3a. then, create the random item as a gameobject, instantiate it, and then do the pickup code 
     after the raycast, and just have the hit object be the new item. 
-4. if the item that was spawned was a 2 handed weapon and the player was already holding something, 
+3b. if the item that was spawned was a 2 handed weapon and the player was already holding something, 
     then it will not do this, and just spawn the 2 handed weapon on the ground in front of the player.
-5. because the out of ammo code is what is run, then the roulette item should be destroyed when it is thrown.
-
+4. because the out of ammo code is what is run, then the roulette item should be destroyed by this point.
 */
+
+/*
+The code in the Weapon class in WeaponUpdate() checks if the gun's ammo is 0, and the player is not holding it
+This code destroys the gun after time seconds when despawn object is called. 
+
+if (this.SyncAccessor_currentAmmo <= 0 && this.SyncAccessor_currentAmmo > -100 && base.gameObject.layer == 7)
+		{
+			base.Invoke("DespawnObject", 0.65f);
+			this.sync___set_value_currentAmmo(-103, true);
+		}
 
 /*
 Plan for choosing random item
