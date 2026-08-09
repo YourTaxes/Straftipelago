@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using DG.Tweening;
@@ -9,6 +10,12 @@ using UnityEngine;
 
 namespace Straftapelago.Finnegan_McD.org.Patches;
 
+// Shared roulette item pools, accessible from any patch class.
+public static class RouletteState
+{
+    public static List<GameObject> obtained_Items = new();
+    public static List<GameObject> unowned_items = new();
+}
 
 //all patches for the itembehaviour class related to the roulette item. This is where the pickup and drop logic is handled.
 
@@ -69,8 +76,8 @@ public class GrabPatches
         if (__instance.weaponName != "Roulette Item") return;
         if (!FishNet.InstanceFinder.IsServer) return;
 
-        SpawnerManager.PopulateAllWeapons();
-        GameObject[] allWeapons = SpawnerManager.AllWeapons;
+        
+        GameObject[] allWeapons = RouletteState.obtained_Items.ToArray();
         if (allWeapons == null || allWeapons.Length == 0)
         {
             Plugin.BepinLogger.LogError("SpawnerManager.AllWeapons is empty; cannot roll a random weapon for Roulette Item");
@@ -103,7 +110,7 @@ public class GrabPatches
 }
 
 
-[HarmonyPatch(typeof(ItemBehaviour), "OnsDrop")]
+[HarmonyPatch(typeof(ItemBehaviour), "OnDrop")]
 public class OnDropPatch
 {
     static bool Prefix(ItemBehaviour __instance, Camera tempCam)
@@ -187,11 +194,43 @@ public class RouletteGunUpdatePatch
 
 //all overrides for the player pickup script related to the roulette item. This is where the pickup and drop logic is handled.
 
+[HarmonyPatch(typeof(PlayerPickup), "Awake")]
+public class PlayerPickupAwakePatch
+{
+    static void Prefix()
+    {
+        SpawnerManager.PopulateAllWeapons();
+        GameObject[] allWeapons = SpawnerManager.AllWeapons;
+
+        RouletteState.unowned_items.Clear();
+        if (allWeapons != null)
+        {
+            RouletteState.unowned_items.AddRange(allWeapons);
+        }
+
+        if (RouletteState.unowned_items.Count > 0)
+        {
+            GameObject firstWeapon = RouletteState.unowned_items[0];
+            RouletteState.unowned_items.RemoveAt(0);
+            RouletteState.obtained_Items.Add(firstWeapon);
+        }
+    }
+}
+
 [HarmonyPatch(typeof(PlayerPickup), "Update")]
 public class PlayerPickupUpdatePatch
 {
     static bool Prefix(PlayerPickup __instance)
     {
+        if (Input.GetKeyDown(KeyCode.P) && RouletteState.unowned_items.Count > 0)
+        {
+            int randomIndex = UnityEngine.Random.Range(0, RouletteState.unowned_items.Count);
+            GameObject randomItem = RouletteState.unowned_items[randomIndex];
+            RouletteState.unowned_items.RemoveAt(randomIndex);
+            RouletteState.obtained_Items.Add(randomItem);
+            Plugin.BepinLogger.LogInfo($"Added random item {randomItem.name} to obtained_Items. Remaining unowned_items: {RouletteState.unowned_items.Count}");
+        }
+
         Traverse t = Traverse.Create(__instance);
         if (t.Field("weaponInHand").GetValue<Weapon>() != null) return true;
 
@@ -457,11 +496,15 @@ public class FirstPersonControllerAwakePatch
 
 /*
 Plan for putting random item into player's hand 
-1. the starting ammo for the weapon will be 1, and it will have it's Gun component's base.inHandDespawn set to false, noAmmoClicks is set to 1,
-    so that when the item has no ammo, it will not despawn immedietly in the player's hand, so that when it is on the ground it can finish running the code
+1. the starting ammo for the weapon will be 1, and it will have it's Gun component's
+     base.inHandDespawn set to false, noAmmoClicks is set to 1,
+    so that when the item has no ammo, it will not despawn immedietly in the player's hand, 
+    so that when it is on the ground it can finish running the code
     for setting the player's weapon in their hand.
-2a. then save the reference to the hand that the gun is in now, so after it is dropped, it can still modify it.
-2b. at the end of onGrab, it will set the gun's ammo to -1 and call Gun.Fire(), so that after a set amount of time, it will despawn the item 
+2a. then save the reference to the hand that the gun is in now, so after it is dropped,
+     it can still modify it.
+2b. at the end of onGrab, it will set the gun's ammo to -1 and call Gun.Fire(), so that after 
+    a set amount of time, it will despawn the item 
     using vanilla methods. 
 3a. then, create the random item as a gameobject, instantiate it, and then do the pickup code 
     after the raycast, and just have the hit object be the new item. 
