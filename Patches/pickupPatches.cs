@@ -350,8 +350,8 @@ public class PlayerPickupAwakePatch
 
         if (RouletteState.unowned_items.Count > 0)
         {
-            GameObject firstWeapon = RouletteState.unowned_items[0];
-            RouletteState.unowned_items.RemoveAt(0);
+            GameObject firstWeapon = RouletteState.unowned_items[30];
+            RouletteState.unowned_items.RemoveAt(30);
             RouletteState.obtained_Items.Add(firstWeapon);
         }
     }
