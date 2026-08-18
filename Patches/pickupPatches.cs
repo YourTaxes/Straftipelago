@@ -119,6 +119,13 @@ public class GrabPatches
         Traverse ppT = Traverse.Create(pp);
         Camera cam = ppT.Field("cam").GetValue<Camera>();
 
+        // The vanilla OnGrab caller only assigns ItemBehaviour.cam AFTER OnGrab() returns,
+        // but the hand-swap below calls PlayerPickup.RightHandDrop()/LeftHandDrop() on the
+        // roulette itself while still inside OnGrab — those internally call
+        // ItemBehaviour.StickOnGround(), which dereferences cam.transform and NREs if it's
+        // still null. Assign it early; the caller reassigning the same value afterwards is harmless.
+        __instance.cam = cam;
+
         Transform playerTransform = cachedRootObject.transform;
         Vector3 spawnPos = playerTransform.position + playerTransform.forward * 5f;
         GameObject spawned = UnityEngine.Object.Instantiate(weaponPrefab, spawnPos, Quaternion.identity);
@@ -203,12 +210,16 @@ public class GrabPatches
             Plugin.BepinLogger.LogInfo("Roulette Item: rolled weapon left on the ground (2-handed / hands full / left-hand roulette)");
         }
 
-        // Step 2b (last) + 4: force the roulette's own out-of-ammo despawn. Uses the
-        // cached rouletteGun reference, not __instance-derived state, since __instance's
-        // own ItemBehaviour fields may already be null by now (RightHandDrop/LeftHandDrop
-        // above, via DropObserverPatch, nulls ib.rootObject/.playerController/.cam).
+        // Step 2b (last) + 4: force the roulette's own out-of-ammo despawn. We don't call the
+        // real Gun.Fire() here — this Roulette Item is bound to a real Gun component via the
+        // assetbundle stub, but (per RouletteGunUpdatePatch's own comment) none of its private
+        // fields like `audio` get wired up like a normal spawned weapon, so Fire() NREs
+        // immediately (audio.PlayOneShot(...) on a null AudioSource), which aborted this whole
+        // Postfix before it ever reached StartCoroutine below — that's why nothing despawned.
+        // The drop itself already happened above (hand-swap branches call RightHandDrop/
+        // LeftHandDrop directly); all that's actually needed here is the ammo bookkeeping and
+        // the deferred despawn.
         rouletteGun.sync___set_value_currentAmmo(-1, true);
-        Traverse.Create(rouletteGun).Method("Fire").GetValue();
 
         __instance.StartCoroutine(DelayedRouletteDespawn(__instance, rouletteGun));
     }
@@ -276,6 +287,14 @@ public class StartPatches
             }
             Traverse.Create(__instance).Field("sprintCrosshair").SetValue(sprintCrosshair);
             Traverse.Create(__instance).Field("standCrosshair").SetValue(standCrosshair);
+
+            GameObject depopVfx = Resources.FindObjectsOfTypeAll<GameObject>()
+                .FirstOrDefault(g => g.name == "WFX_Explosion StarSmoke");
+            if (depopVfx == null)
+            {
+                Plugin.BepinLogger.LogError("Roulette Item: WFX_Explosion StarSmoke VFX not found");
+            }
+            __instance.depopVFX = depopVfx;
 
             CreateColors.Apply(__instance.gameObject);
 

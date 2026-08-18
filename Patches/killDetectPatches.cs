@@ -9,6 +9,19 @@ using UnityEngine;
 
 namespace Straftapelago.Finnegan_McD.org.Patches;
 
+/*
+For making a general kill detection system in the future,
+The best course of action seems to be hooking the 
+PauseManager.Instance.WriteLog() method
+which then calls the 
+MatchLogs.Instance.WriteLog()
+method, which is what shows when a player gets a kill.
+
+A caveat is that I would need to access the 
+this.behavior.weaponName of the calling object in order to
+know what weapon they got a kill with.
+*/
+
 [HarmonyPatch(typeof(ItemBehaviour), "KillAnimation")]
 public class KillAnimationPatches
 {
