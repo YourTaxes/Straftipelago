@@ -69,18 +69,17 @@ public class ItemSpawnerSpawnPatch
 [HarmonyPatch(typeof(ItemBehaviour), "OnGrab")]
 public class GrabPatches
 {
-    static void Postfix(ItemBehaviour __instance)
+    static void Postfix(ItemBehaviour __instance, bool owner, bool rightHand)
     {
         Plugin.BepinLogger.LogInfo("OnGrab called on weapon " + __instance.weaponName);
 
         if (__instance.weaponName != "Roulette Item") return;
         if (!FishNet.InstanceFinder.IsServer) return;
 
-        
         GameObject[] allWeapons = RouletteState.obtained_Items.ToArray();
         if (allWeapons == null || allWeapons.Length == 0)
         {
-            Plugin.BepinLogger.LogError("SpawnerManager.AllWeapons is empty; cannot roll a random weapon for Roulette Item");
+            Plugin.BepinLogger.LogError("RouletteState.obtained_Items is empty; cannot roll a random weapon for Roulette Item");
             return;
         }
 
@@ -88,7 +87,39 @@ public class GrabPatches
         GameObject weaponPrefab = allWeapons[randomIndex];
         if (weaponPrefab == null) return;
 
-        Transform playerTransform = __instance.rootObject.transform;
+        // Step 1: arm the roulette's own Gun so it survives the hand-swap below without
+        // despawning itself prematurely, and so it can later trigger a clean vanilla
+        // out-of-ammo despawn instead of us destroying it directly.
+        Gun rouletteGun = __instance.GetComponent<Gun>();
+        if (rouletteGun == null)
+        {
+            Plugin.BepinLogger.LogError("Roulette Item has no Gun component; aborting roulette roll");
+            return;
+        }
+        rouletteGun.sync___set_value_currentAmmo(1, true);
+        Traverse.Create(rouletteGun).Field("inHandDespawn").SetValue(false);
+        rouletteGun.noAmmoClicks = 1;
+
+        // Step 2a: WeaponUpdate() normally refreshes rootObject/playerController from the
+        // ItemBehaviour every frame, but it never runs for the Roulette Item
+        // (RouletteGunUpdatePatch blocks Gun.Update() entirely), and Gun.Fire() (called at
+        // the end, below) needs them. Cache them onto the Gun's own fields now, before
+        // anything drops the roulette and nulls these fields on the ItemBehaviour.
+        GameObject cachedRootObject = __instance.rootObject;
+        FirstPersonController cachedPlayerController = __instance.playerController;
+        if (cachedRootObject == null)
+        {
+            Plugin.BepinLogger.LogError("Roulette Item OnGrab: rootObject is null, cannot resolve PlayerPickup");
+            return;
+        }
+        rouletteGun.rootObject = cachedRootObject;
+        rouletteGun.playerController = cachedPlayerController;
+
+        PlayerPickup pp = cachedRootObject.GetComponent<PlayerPickup>();
+        Traverse ppT = Traverse.Create(pp);
+        Camera cam = ppT.Field("cam").GetValue<Camera>();
+
+        Transform playerTransform = cachedRootObject.transform;
         Vector3 spawnPos = playerTransform.position + playerTransform.forward * 5f;
         GameObject spawned = UnityEngine.Object.Instantiate(weaponPrefab, spawnPos, Quaternion.identity);
 
@@ -97,15 +128,105 @@ public class GrabPatches
         // transform.parent.up when dispenserStart is false, which NREs with no parent.
         // Forcing dispenserStart true (same flag DispenserDrop() sets for ejected items)
         // skips that tween and matches this item's actual "dispensed into the world" state.
-        ItemBehaviour spawnedBehaviour = spawned.GetComponent<ItemBehaviour>();
-        if (spawnedBehaviour != null)
+        ItemBehaviour spawnedIb = spawned.GetComponent<ItemBehaviour>();
+        Weapon spawnedWeapon = spawned.GetComponent<Weapon>();
+        if (spawnedIb != null)
         {
-            Traverse.Create(spawnedBehaviour).Field("dispenserStart").SetValue(true);
+            Traverse.Create(spawnedIb).Field("dispenserStart").SetValue(true);
         }
 
         FishNet.InstanceFinder.ServerManager.Spawn(spawned);
 
         Plugin.BepinLogger.LogInfo($"Roulette Item rolled weapon [{randomIndex}]: {weaponPrefab.name}");
+
+        // Step 3a/3b: equip the rolled weapon straight into the roulette's hand, unless it
+        // needs both hands and the other hand is already full (or the roulette is held
+        // left-handed, which has no vanilla both-hands pickup path) — in that case leave it
+        // spawned on the ground, same as the old behavior.
+        bool requireBothHands = spawnedWeapon != null && spawnedWeapon.requireBothHands;
+        bool otherHandOccupied = rightHand
+            ? pp.sync___get_value_hasObjectInLeftHand()
+            : ppT.Method("sync___get_value_hasObjectInHand").GetValue<bool>();
+        bool mustGroundSpawn = spawnedIb == null || spawnedWeapon == null
+            || (requireBothHands && (otherHandOccupied || !rightHand));
+
+        if (!mustGroundSpawn)
+        {
+            Grip[] grips = spawned.GetComponentsInChildren<Grip>();
+            Transform gripRightT = grips.Length > 0 ? grips[0].transform : null;
+            Transform gripLeftT = grips.Length > 1 ? grips[1].transform : null;
+            object rigBuilder = ppT.Field("RigBuilder").GetValue();
+
+            if (requireBothHands)
+            {
+                pp.RightHandDrop();
+                ppT.Method("sync___set_value_objInHand", spawned, true).GetValue();
+                ppT.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
+                Transform[] bothHandPos = pp.pickupPositionBothHand;
+                ppT.Method("SetObjectInHandServer", spawned,
+                    bothHandPos[spawnedIb.camChildIndex].position,
+                    bothHandPos[spawnedIb.camChildIndex].rotation,
+                    cam.gameObject, true).GetValue();
+                ppT.Method("SetRightIKTarget", gripRightT).GetValue();
+                ppT.Method("SetLeftIKTarget", gripLeftT).GetValue();
+                Traverse.Create(rigBuilder).Method("Build").GetValue();
+            }
+            else if (rightHand)
+            {
+                pp.RightHandDrop();
+                ppT.Method("sync___set_value_objInHand", spawned, true).GetValue();
+                ppT.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
+                Transform[] pickupPos = ppT.Field("pickupPositionRightHand").GetValue<Transform[]>();
+                ppT.Method("SetObjectInHandServer", spawned,
+                    pickupPos[spawnedIb.camChildIndex].position,
+                    pickupPos[spawnedIb.camChildIndex].rotation,
+                    cam.gameObject, true).GetValue();
+                ppT.Method("SetRightIKTarget", gripRightT).GetValue();
+                Traverse.Create(rigBuilder).Method("Build").GetValue();
+            }
+            else
+            {
+                pp.LeftHandDrop();
+                ppT.Method("sync___set_value_objInLeftHand", spawned, true).GetValue();
+                ppT.Method("sync___set_value_hasObjectInLeftHand", true, true).GetValue();
+                Transform[] pickupPos = ppT.Field("pickupPositionLeftHand").GetValue<Transform[]>();
+                ppT.Method("SetObjectInHandServer", spawned,
+                    pickupPos[spawnedIb.camChildIndexLeftHand].position,
+                    pickupPos[spawnedIb.camChildIndexLeftHand].rotation,
+                    cam.gameObject, false).GetValue();
+                ppT.Method("SetLeftIKTarget", gripLeftT).GetValue();
+                Traverse.Create(rigBuilder).Method("Build").GetValue();
+            }
+        }
+        else
+        {
+            Plugin.BepinLogger.LogInfo("Roulette Item: rolled weapon left on the ground (2-handed / hands full / left-hand roulette)");
+        }
+
+        // Step 2b (last) + 4: force the roulette's own out-of-ammo despawn. Uses the
+        // cached rouletteGun reference, not __instance-derived state, since __instance's
+        // own ItemBehaviour fields may already be null by now (RightHandDrop/LeftHandDrop
+        // above, via DropObserverPatch, nulls ib.rootObject/.playerController/.cam).
+        rouletteGun.sync___set_value_currentAmmo(-1, true);
+        Traverse.Create(rouletteGun).Method("Fire").GetValue();
+
+        __instance.StartCoroutine(DelayedRouletteDespawn(__instance, rouletteGun));
+    }
+
+    // The vanilla caller of OnGrab (PlayerPickup's SetObjectInHandObserver RPC logic)
+    // force-sets obj.layer back to 8 immediately after OnGrab returns, regardless of what
+    // happens in this postfix. Weapon.DespawnObject() refuses to despawn while layer is 8
+    // or 9, so scheduling the despawn inline here would silently no-op forever. Deferring
+    // by one frame lets that caller finish first before we force the layer back down.
+    static System.Collections.IEnumerator DelayedRouletteDespawn(ItemBehaviour rouletteIb, Gun rouletteGun)
+    {
+        yield return null;
+        if (rouletteIb == null || rouletteGun == null) yield break;
+        rouletteIb.gameObject.layer = 7;
+        rouletteIb.UnsetLayer();
+        yield return new WaitForSeconds(0.65f);
+        if (rouletteGun == null) yield break;
+        Traverse.Create(rouletteGun).Method("DespawnObject").GetValue();
     }
 }
 
