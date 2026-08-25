@@ -24,7 +24,7 @@ public class ItemSpawnerStartPatch
 {
     static void Prefix(ItemSpawner __instance)
     {
-        Plugin.BepinLogger.LogInfo("ItemSpawner Start called");
+        //Plugin.BepinLogger.LogInfo("ItemSpawner Start called");
 
         // Register the AssetBundle-loaded roulette prefab with FishNet's spawnable
         // prefab table. Must run on every peer (host AND clients), not just the
@@ -37,7 +37,7 @@ public class ItemSpawnerStartPatch
         if (rouletteNob != null && spawnables != null)
         {
             spawnables.AddObject(rouletteNob, true);
-            Plugin.BepinLogger.LogInfo($"Roulette Item prefab registered: PrefabId={rouletteNob.PrefabId}, CollectionId={rouletteNob.SpawnableCollectionId}");
+            //Plugin.BepinLogger.LogInfo($"Roulette Item prefab registered: PrefabId={rouletteNob.PrefabId}, CollectionId={rouletteNob.SpawnableCollectionId}");
         }
 
         if (!FishNet.InstanceFinder.IsServer) return;
@@ -48,9 +48,9 @@ public class ItemSpawnerStartPatch
         ItemBehaviour ib = __instance.itemToSpawn.GetComponent<ItemBehaviour>();
         Traverse t = Traverse.Create(ib);
         t.Field("dispenserStart").SetValue(false);
-        Plugin.BepinLogger.LogInfo("dispenserStart is now " + t.Field("dispenserStart").GetValue<bool>());
-        Plugin.BepinLogger.LogInfo("Replaced " + itemName + " spawnerwith Roulette Item Prefab");
-        Plugin.BepinLogger.LogInfo("ItemSpawner Start called, spawning Roulette Item at " + __instance.transform.position);
+        //Plugin.BepinLogger.LogInfo("dispenserStart is now " + t.Field("dispenserStart").GetValue<bool>());
+        //Plugin.BepinLogger.LogInfo("Replaced " + itemName + " spawnerwith Roulette Item Prefab");
+        //Plugin.BepinLogger.LogInfo("ItemSpawner Start called, spawning Roulette Item at " + __instance.transform.position);
     }
 }
 
@@ -60,7 +60,7 @@ public class ItemSpawnerSpawnPatch
     static void Prefix(ItemSpawner __instance)
     {
         bool dispenserStart = Traverse.Create(__instance.itemToSpawn.GetComponent<ItemBehaviour>()).Field("dispenserStart").GetValue<bool>();
-        Plugin.BepinLogger.LogInfo("dispenserStart is now " + dispenserStart);
+        //Plugin.BepinLogger.LogInfo("dispenserStart is now " + dispenserStart);
     }
 }
 
@@ -119,12 +119,47 @@ public class GrabPatches
         Traverse ppT = Traverse.Create(pp);
         Camera cam = ppT.Field("cam").GetValue<Camera>();
 
+        // Debug: dump both hands' PlayerPickup sync-var state. Unity "destroyed" objects
+        // still compare == null via Unity's overload, so this also surfaces dangling
+        // references safely instead of throwing.
+        void LogHandState(string label)
+        {
+            bool hasRight = pp.sync___get_value_hasObjectInHand();
+            GameObject objRight = pp.sync___get_value_objInHand();
+            bool hasLeft = pp.sync___get_value_hasObjectInLeftHand();
+            GameObject objLeft = pp.sync___get_value_objInLeftHand();
+            Plugin.BepinLogger.LogInfo(
+                $"[Roulette:{label}] hasObjectInHand={hasRight} objInHand={(objRight == null ? "null" : objRight.name)} | " +
+                $"hasObjectInLeftHand={hasLeft} objInLeftHand={(objLeft == null ? "null" : objLeft.name)}");
+        }
+        LogHandState("start");
+
         // The vanilla OnGrab caller only assigns ItemBehaviour.cam AFTER OnGrab() returns,
         // but the hand-swap below calls PlayerPickup.RightHandDrop()/LeftHandDrop() on the
         // roulette itself while still inside OnGrab — those internally call
         // ItemBehaviour.StickOnGround(), which dereferences cam.transform and NREs if it's
         // still null. Assign it early; the caller reassigning the same value afterwards is harmless.
         __instance.cam = cam;
+
+        // Vanilla RightHandPickup() sets hasObjectInHand/objInHand BEFORE calling
+        // SetObjectInHandServer (whose chain fires OnGrab), but LeftHandPickup() calls
+        // SetObjectInHandServer FIRST and only sets hasObjectInLeftHand/objInLeftHand
+        // afterward — so on a left-hand roulette pickup, those sync vars are still
+        // false/stale right here, which would make LeftHandDrop() below silently no-op
+        // instead of actually detaching the roulette (its guard clause checks this sync
+        // var). Normalize both hands to the same "roulette is currently held" state so
+        // the rest of this method can treat left/right symmetrically.
+        if (rightHand)
+        {
+            ppT.Method("sync___set_value_objInHand", __instance.gameObject, true).GetValue();
+            ppT.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
+        }
+        else
+        {
+            ppT.Method("sync___set_value_objInLeftHand", __instance.gameObject, true).GetValue();
+            ppT.Method("sync___set_value_hasObjectInLeftHand", true, true).GetValue();
+        }
+        LogHandState("after normalize");
 
         Transform playerTransform = cachedRootObject.transform;
         Vector3 spawnPos = playerTransform.position + playerTransform.forward * 5f;
@@ -156,17 +191,50 @@ public class GrabPatches
             : ppT.Method("sync___get_value_hasObjectInHand").GetValue<bool>();
         bool mustGroundSpawn = spawnedIb == null || spawnedWeapon == null
             || (requireBothHands && (otherHandOccupied || !rightHand));
+        Plugin.BepinLogger.LogInfo(
+            $"[Roulette:before swap] rightHand={rightHand} requireBothHands={requireBothHands} " +
+            $"otherHandOccupied={otherHandOccupied} mustGroundSpawn={mustGroundSpawn}");
+        LogHandState("before swap");
 
         if (!mustGroundSpawn)
         {
             Grip[] grips = spawned.GetComponentsInChildren<Grip>();
             Transform gripRightT = grips.Length > 0 ? grips[0].transform : null;
             Transform gripLeftT = grips.Length > 1 ? grips[1].transform : null;
+            // ItemBehaviour.Start() (which hasn't run yet — spawned this same frame) is
+            // normally what assigns gripRight/gripLeft. Vanilla RightHandPickup()/
+            // LeftHandPickup()'s "already holding something" branches re-read
+            // SyncAccessor_objInHand(...).gripRight/gripLeft AFTER SetObjectInHandServer
+            // returns and call SetRightIKTarget/SetLeftIKTarget again themselves — since our
+            // reentrant swap below changes objInHand/objInLeftHand to this new weapon, that
+            // outer vanilla code ends up re-targeting IK at these fields. Leaving them null
+            // until Start() catches up wipes out the correct grip target we set ourselves,
+            // which is exactly why the hand position looks wrong until the item is dropped
+            // and picked back up (or hand-swapped) once Start() has actually run.
+            spawnedIb.gripRight = gripRightT;
+            spawnedIb.gripLeft = gripLeftT;
+
+            // Weapon.cam gets refreshed every frame from ItemBehaviour.cam via WeaponUpdate(),
+            // so a one-frame delay there self-corrects. Weapon.camAnimScript does NOT — it's
+            // only ever assigned once, by the vanilla OnGrab caller's post-OnGrab continuation
+            // (obj.GetComponent<Weapon>().camAnimScript = camAnimScript). Fire()'s recoil path
+            // (CameraAnimation()/CameraRevolverAnimation()) needs camAnimScript.baseSpeed and
+            // cam.transform, and normal DropObjectObserver logic nulls camAnimScript out on
+            // every drop — if this weapon is transiently dropped anywhere in our reentrant
+            // swap chain before that one-time assignment lands, camAnimScript stays null (or
+            // stale) for the rest of its lifetime, silently skipping recoil without an NRE if
+            // it's non-null-but-wrong, matching "fixed by drop+repickup or hand-swap" exactly
+            // (both re-trigger a fresh assignment). Set both explicitly ourselves so neither
+            // depends on timing we don't control.
+            spawnedWeapon.cam = cam;
+            spawnedWeapon.camAnimScript = ppT.Field("camAnimScript").GetValue<CameraShakeConstrains>();
+
             object rigBuilder = ppT.Field("RigBuilder").GetValue();
 
             if (requireBothHands)
             {
                 pp.RightHandDrop();
+                LogHandState("both-hands: after RightHandDrop");
                 ppT.Method("sync___set_value_objInHand", spawned, true).GetValue();
                 ppT.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
                 Transform[] bothHandPos = pp.pickupPositionBothHand;
@@ -177,10 +245,12 @@ public class GrabPatches
                 ppT.Method("SetRightIKTarget", gripRightT).GetValue();
                 ppT.Method("SetLeftIKTarget", gripLeftT).GetValue();
                 Traverse.Create(rigBuilder).Method("Build").GetValue();
+                LogHandState("both-hands: after equip");
             }
             else if (rightHand)
             {
                 pp.RightHandDrop();
+                LogHandState("right-hand: after RightHandDrop");
                 ppT.Method("sync___set_value_objInHand", spawned, true).GetValue();
                 ppT.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
                 Transform[] pickupPos = ppT.Field("pickupPositionRightHand").GetValue<Transform[]>();
@@ -190,10 +260,12 @@ public class GrabPatches
                     cam.gameObject, true).GetValue();
                 ppT.Method("SetRightIKTarget", gripRightT).GetValue();
                 Traverse.Create(rigBuilder).Method("Build").GetValue();
+                LogHandState("right-hand: after equip");
             }
             else
             {
                 pp.LeftHandDrop();
+                LogHandState("left-hand: after LeftHandDrop");
                 ppT.Method("sync___set_value_objInLeftHand", spawned, true).GetValue();
                 ppT.Method("sync___set_value_hasObjectInLeftHand", true, true).GetValue();
                 Transform[] pickupPos = ppT.Field("pickupPositionLeftHand").GetValue<Transform[]>();
@@ -203,12 +275,20 @@ public class GrabPatches
                     cam.gameObject, false).GetValue();
                 ppT.Method("SetLeftIKTarget", gripLeftT).GetValue();
                 Traverse.Create(rigBuilder).Method("Build").GetValue();
+                LogHandState("left-hand: after equip");
             }
+
+            Plugin.BepinLogger.LogInfo(
+                $"[Roulette:equipped weapon state] name={spawned.name} layer={spawned.layer} " +
+                $"inRightHand={spawnedWeapon.inRightHand} inLeftHand={spawnedWeapon.inLeftHand} " +
+                $"cam={(spawnedWeapon.cam == null ? "null" : spawnedWeapon.cam.name)} " +
+                $"camAnimScript={(spawnedWeapon.camAnimScript == null ? "null" : spawnedWeapon.camAnimScript.ToString())}");
         }
         else
         {
             Plugin.BepinLogger.LogInfo("Roulette Item: rolled weapon left on the ground (2-handed / hands full / left-hand roulette)");
         }
+        LogHandState("after swap block");
 
         // Step 2b (last) + 4: force the roulette's own out-of-ammo despawn. We don't call the
         // real Gun.Fire() here — this Roulette Item is bound to a real Gun component via the
@@ -220,6 +300,7 @@ public class GrabPatches
         // LeftHandDrop directly); all that's actually needed here is the ammo bookkeeping and
         // the deferred despawn.
         rouletteGun.sync___set_value_currentAmmo(-1, true);
+        LogHandState("end");
 
         __instance.StartCoroutine(DelayedRouletteDespawn(__instance, rouletteGun));
     }
@@ -272,10 +353,13 @@ public class StartPatches
 {
     static void Postfix(ItemBehaviour __instance)
     {
-        Plugin.BepinLogger.LogInfo("Start called on weapon " + __instance.weaponName);
+        // if (__instance.weaponName != "Roulette Item")
+        // {
+        //     Plugin.BepinLogger.LogInfo("Start called on weapon " + __instance.weaponName);  
+        // }
         if (__instance.weaponName == "Roulette Item")
         {
-            Plugin.BepinLogger.LogInfo("Roulette Item Start called");
+            //Plugin.BepinLogger.LogInfo("Roulette Item Start called");
 
             Sprite sprintCrosshair = Resources.FindObjectsOfTypeAll<Sprite>()
                 .FirstOrDefault(s => s.name == "Straftat_Crosshair03_1");
@@ -300,18 +384,18 @@ public class StartPatches
 
             var allMaterials = new System.Collections.Generic.List<Material>();
             int counter = 0;
-            Plugin.BepinLogger.LogInfo($"Renderer length is {__instance.GetComponentsInChildren<Renderer>().Length}");
+            //Plugin.BepinLogger.LogInfo($"Renderer length is {__instance.GetComponentsInChildren<Renderer>().Length}");
             foreach (Renderer renderer in __instance.GetComponentsInChildren<Renderer>())
             {
                 foreach (Material mat in renderer.materials)
                 {
                     counter++;
-                    Plugin.BepinLogger.LogInfo($"Material {counter}: {mat.name}, Renderer: {renderer.name}, Shader: {mat.shader.name}");
+                    //Plugin.BepinLogger.LogInfo($"Material {counter}: {mat.name}, Renderer: {renderer.name}, Shader: {mat.shader.name}");
                     allMaterials.Add(mat);
                 }
             }
             Traverse.Create(__instance).Field("hoveredObjectMat").SetValue(allMaterials);
-            Plugin.BepinLogger.LogInfo("Roulette Item materials set");
+            //Plugin.BepinLogger.LogInfo("Roulette Item materials set");
         }
     }
 }
@@ -329,6 +413,33 @@ public class RouletteGunUpdatePatch
     {
         ItemBehaviour ib = __instance.GetComponent<ItemBehaviour>();
         return ib == null || ib.weaponName != "Roulette Item";
+    }
+}
+
+// Temporary diagnostics: cam/camAnimScript are confirmed correctly wired on roulette-given
+// weapons, but their recoil "punch" animation still doesn't play. WeaponAnimation() is a
+// strict if/else-if chain (holdback / instantPush / horizontalAnimation / requireBothHands /
+// plain else), each branch calling a DOTween Do*Rotation/Do*Move on base.transform or fpArms
+// unconditionally — so if the animator "Shoot" trigger fires but the punch doesn't visually
+// show, either a different branch is active than expected, or the DOTween call itself isn't
+// having an effect. Log every field these branches read, for every weapon fire (roulette-given
+// or normal), so a normal weapon's log can be diffed against a roulette-given one's.
+[HarmonyPatch(typeof(Weapon), "WeaponAnimation")]
+public class WeaponAnimationDebugPatch
+{
+    static void Prefix(Weapon __instance)
+    {
+        Traverse wt = Traverse.Create(__instance);
+        Plugin.BepinLogger.LogInfo(
+            $"[Roulette:WeaponAnimation] weapon={__instance.gameObject.name} layer={__instance.gameObject.layer} " +
+            $"holdback={wt.Field("holdback").GetValue<bool>()} instantPush={wt.Field("instantPush").GetValue<bool>()} " +
+            $"horizontalAnimation={wt.Field("horizontalAnimation").GetValue<bool>()} requireBothHands={__instance.requireBothHands} " +
+            $"instantComebackOnFire={wt.Field("instantComebackOnFire").GetValue<bool>()} " +
+            $"animationPunch={wt.Field("animationPunch").GetValue<Vector3>()} animationDuration={wt.Field("animationDuration").GetValue<float>()} " +
+            $"animationVibrato={wt.Field("animationVibrato").GetValue<int>()} animationElasticity={wt.Field("animationElasticity").GetValue<float>()} " +
+            $"fpArms={(__instance.fpArms == null ? "null" : __instance.fpArms.name)} elbowPivot={(__instance.elbowPivot == null ? "null" : __instance.elbowPivot.name)} " +
+            $"transform.localPosition={__instance.transform.localPosition} transform.parent={(__instance.transform.parent == null ? "null" : __instance.transform.parent.name)} " +
+            $"activeInHierarchy={__instance.gameObject.activeInHierarchy}");
     }
 }
 
@@ -369,6 +480,10 @@ public class PlayerPickupUpdatePatch
             RouletteState.unowned_items.RemoveAt(randomIndex);
             RouletteState.obtained_Items.Add(randomItem);
             Plugin.BepinLogger.LogInfo($"Added random item {randomItem.name} to obtained_Items. Remaining unowned_items: {RouletteState.unowned_items.Count}");
+
+            string obtainedList = string.Join(Environment.NewLine,
+                RouletteState.obtained_Items.Select((item, i) => $"  [{i}] {(item == null ? "null" : item.name)}"));
+            Plugin.BepinLogger.LogInfo($"obtained_Items ({RouletteState.obtained_Items.Count} total):{Environment.NewLine}{obtainedList}");
         }
 
         Traverse t = Traverse.Create(__instance);
@@ -543,6 +658,71 @@ public class RightHandPickupPatch
         //     t.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
         //     DoSingleHandPickup(__instance, t, ib, cam);
         // }
+
+        return false;
+    }
+}
+
+// Unlike RightHandPickup() (which re-reads SyncAccessor_objInHand for its post-pickup
+// SetRightIKTarget call, so it correctly sees whatever GrabPatches.Postfix swapped objInHand
+// to while nested inside SetObjectInHandServer/OnGrab), vanilla LeftHandPickup() re-parents
+// and re-targets IK using the raw raycast-hit GameObject captured at the top of the method —
+// a closure-captured local, never re-read. So when the Roulette Item is picked up left-handed
+// and GrabPatches.Postfix reentrantly swaps objInLeftHand to the newly rolled weapon partway
+// through OnGrab, vanilla LeftHandPickup() unconditionally stomps that back to the (soon to be
+// despawned) Roulette Item reference right after SetObjectInHandServer returns — leaving
+// objInLeftHand pointing at a destroyed object and the right hand's IK/position corrupted as a
+// side effect. This patch replaces the whole method for the Roulette Item specifically, using
+// RightHandPickup()'s safer pattern instead: set the sync vars BEFORE calling
+// SetObjectInHandServer, and re-read SyncAccessor_objInLeftHand afterward instead of the stale
+// local, so our swap survives.
+[HarmonyPatch(typeof(PlayerPickup), "LeftHandPickup")]
+public class LeftHandPickupPatch
+{
+    static bool Prefix(PlayerPickup __instance)
+    {
+        Traverse t = Traverse.Create(__instance);
+        Camera cam = t.Field("cam").GetValue<Camera>();
+        float interactionDistance = t.Field("interactionDistance").GetValue<float>();
+        LayerMask interactionLayer = t.Field("interactionLayer").GetValue<LayerMask>();
+        float sphereRadius = t.Field("sphereRadius").GetValue<float>();
+        float currentHitDistance = t.Field("currentHitDistance").GetValue<float>();
+
+        GameObject hitObj = null;
+        RaycastHit hit, hit2;
+        if (Physics.Raycast(cam.transform.position, cam.transform.forward, out hit, interactionDistance, interactionLayer))
+            hitObj = hit.transform.gameObject;
+        else if (Physics.SphereCast(cam.transform.position, sphereRadius, cam.transform.forward, out hit2, currentHitDistance, interactionLayer))
+            hitObj = hit2.transform.gameObject;
+
+        if (hitObj == null) return true;
+        ItemBehaviour ib = hitObj.GetComponent<ItemBehaviour>();
+        if (ib?.weaponName != "Roulette Item") return true;
+
+        Plugin.BepinLogger.LogInfo("[Roulette] LeftHandPickupPatch intercepted left-hand pickup of Roulette Item");
+
+        if (__instance.sync___get_value_hasObjectInLeftHand())
+        {
+            __instance.LeftHandDrop();
+        }
+        SoundManager.Instance.PlaySound(t.Field("pickupClip").GetValue<AudioClip>());
+        t.Method("sync___set_value_objInLeftHand", hitObj, true).GetValue();
+        t.Method("sync___set_value_hasObjectInLeftHand", true, true).GetValue();
+        Transform[] pickupPos = t.Field("pickupPositionLeftHand").GetValue<Transform[]>();
+        t.Method("SetObjectInHandServer", hitObj,
+            pickupPos[ib.camChildIndexLeftHand].position,
+            pickupPos[ib.camChildIndexLeftHand].rotation,
+            cam.gameObject, false).GetValue();
+
+        GameObject currentLeft = __instance.sync___get_value_objInLeftHand();
+        Plugin.BepinLogger.LogInfo(
+            $"[Roulette] LeftHandPickupPatch: after SetObjectInHandServer, objInLeftHand={(currentLeft == null ? "null" : currentLeft.name)}");
+        if (currentLeft != null)
+        {
+            t.Method("SetLeftIKTarget", currentLeft.GetComponent<ItemBehaviour>().gripLeft).GetValue();
+        }
+        object rigBuilder = t.Field("RigBuilder").GetValue();
+        Traverse.Create(rigBuilder).Method("Build").GetValue();
 
         return false;
     }
