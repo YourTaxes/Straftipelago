@@ -15,6 +15,26 @@ public static class RouletteState
 {
     public static List<GameObject> obtained_Items = new();
     public static List<GameObject> unowned_items = new();
+
+    public static void Reset()
+    {
+        SpawnerManager.PopulateAllWeapons();
+        GameObject[] allWeapons = SpawnerManager.AllWeapons;
+
+        obtained_Items.Clear();
+        unowned_items.Clear();
+        if (allWeapons != null)
+        {
+            unowned_items.AddRange(allWeapons);
+        }
+
+        if (unowned_items.Count > 0)
+        {
+            GameObject firstWeapon = unowned_items[30];
+            unowned_items.RemoveAt(30);
+            obtained_Items.Add(firstWeapon);
+        }
+    }
 }
 
 //all patches for the itembehaviour class related to the roulette item. This is where the pickup and drop logic is handled.
@@ -450,21 +470,7 @@ public class PlayerPickupAwakePatch
 {
     static void Prefix()
     {
-        SpawnerManager.PopulateAllWeapons();
-        GameObject[] allWeapons = SpawnerManager.AllWeapons;
-
-        RouletteState.unowned_items.Clear();
-        if (allWeapons != null)
-        {
-            RouletteState.unowned_items.AddRange(allWeapons);
-        }
-
-        if (RouletteState.unowned_items.Count > 0)
-        {
-            GameObject firstWeapon = RouletteState.unowned_items[30];
-            RouletteState.unowned_items.RemoveAt(30);
-            RouletteState.obtained_Items.Add(firstWeapon);
-        }
+        RouletteState.Reset();
     }
 }
 
@@ -473,6 +479,12 @@ public class PlayerPickupUpdatePatch
 {
     static bool Prefix(PlayerPickup __instance)
     {
+        if (Input.GetKeyDown(KeyCode.O))
+        {
+            RouletteState.Reset();
+            Plugin.BepinLogger.LogInfo($"Reset roulette item lists. unowned_items: {RouletteState.unowned_items.Count}, obtained_Items: {RouletteState.obtained_Items.Count}");
+        }
+
         if (Input.GetKeyDown(KeyCode.P) && RouletteState.unowned_items.Count > 0)
         {
             int randomIndex = UnityEngine.Random.Range(0, RouletteState.unowned_items.Count);
