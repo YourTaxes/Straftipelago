@@ -1,6 +1,8 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using BepInEx;
 using BepInEx.Logging;
 using HarmonyLib;
@@ -31,9 +33,42 @@ public class Plugin : BaseUnityPlugin
     public static ArchipelagoClient ArchipelagoClient;
     public static GameObject RouletteItemPrefab;
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int nStdHandle);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+
+    private const int STD_INPUT_HANDLE = -10;
+    private const uint ENABLE_QUICK_EDIT_MODE = 0x0040;
+    private const uint ENABLE_EXTENDED_FLAGS = 0x0080;
+
+    // BepInEx's console (and vanilla Debug.Log/print, which it also captures) writes to
+    // CONIN$/STD_INPUT_HANDLE's underlying console window. Windows consoles default to
+    // QuickEdit Mode, which suspends the whole process's writes to that console the moment
+    // the window is focused/clicked into selection state, until Enter/Esc is pressed or the
+    // selection is cancelled — since Unity's game loop runs on the same thread doing the
+    // logging, that write blocking freezes the entire game. Clearing the flag here (with
+    // ENABLE_EXTENDED_FLAGS set, which Windows requires to be present for the QuickEdit bit
+    // to take effect at all) prevents that hang for the lifetime of the console window.
+    private static void DisableQuickEdit()
+    {
+        IntPtr handle = GetStdHandle(STD_INPUT_HANDLE);
+        if (handle == IntPtr.Zero || handle == new IntPtr(-1)) return;
+        if (!GetConsoleMode(handle, out uint mode)) return;
+
+        mode &= ~ENABLE_QUICK_EDIT_MODE;
+        mode |= ENABLE_EXTENDED_FLAGS;
+        SetConsoleMode(handle, mode);
+    }
+
     private void Awake()
     {
-        
+        DisableQuickEdit();
+
         // Plugin startup logic
         BepinLogger = Logger;
         BepinLogger.LogInfo("Mod Started - this is the print statement");
