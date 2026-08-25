@@ -4,7 +4,6 @@ $ErrorActionPreference = "Stop"
 
 $SourceBundles = "C:\Users\finne\Documents\Roulette_Item_2\AssetBundles\StandaloneWindows"
 $DestBundles = "AssetBundles"
-$DllName = "Straftapelago.Finnegan_McD.org.dll"
 $BuildOutputDir = "bin\Release\Straftapelago.Finnegan_McD.org"
 $PluginsDir = "..\BepInEx\plugins"
 
@@ -21,7 +20,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet build failed with exit code $LASTEXITCODE"
 }
 
-Write-Host "Moving $DllName to $PluginsDir..."
-Move-Item -Path (Join-Path $BuildOutputDir $DllName) -Destination $PluginsDir -Force
+Write-Host "Moving contents of $BuildOutputDir to $PluginsDir..."
+Get-ChildItem $BuildOutputDir -Force | Move-Item -Destination $PluginsDir -Force
 
 Write-Host "Done."
