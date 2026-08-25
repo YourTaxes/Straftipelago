@@ -109,7 +109,7 @@ public class Plugin : BaseUnityPlugin
 
     private void OnGUI()
     {
-        BepinLogger.LogInfo("mod Gui");
+        //BepinLogger.LogInfo("mod Gui");
         // show the mod is currently loaded in the corner
         GUI.Label(new Rect(16, 16, 300, 20), ModDisplayInfo);
         ArchipelagoConsole.OnGUI();
