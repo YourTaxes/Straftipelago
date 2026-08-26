@@ -67,42 +67,58 @@ public class Plugin : BaseUnityPlugin
 
     private void Awake()
     {
-        DisableQuickEdit();
-
-        // Plugin startup logic
-        BepinLogger = Logger;
-        BepinLogger.LogInfo("Mod Started - this is the print statement");
-
-        using (Stream stream = typeof(Plugin).Assembly.GetManifestResourceStream(
-            "Straftapelago.Finnegan_McD.org.AssetBundles.roulette_item"))
+        // Unity swallows nothing here, but BepInEx only surfaces a failed Awake() as a
+        // terse chainloader line — and a partially-initialized plugin then fails in
+        // confusing ways later (OnGUI drawing against a null ArchipelagoClient, patches
+        // never applied, etc). Catch and log the whole thing so a load failure is
+        // obvious in LogOutput.log instead of silent. Logged via the inherited `Logger`
+        // rather than the static BepinLogger field, so a throw that happens before (or
+        // during) `BepinLogger = Logger;` still gets reported instead of being masked by
+        // a secondary NullReferenceException.
+        try
         {
-            if (stream != null)
+            DisableQuickEdit();
+
+            // Plugin startup logic
+            BepinLogger = Logger;
+            BepinLogger.LogInfo("Mod Started - this is the print statement");
+
+            using (Stream stream = typeof(Plugin).Assembly.GetManifestResourceStream(
+                "Straftapelago.Finnegan_McD.org.AssetBundles.roulette_item"))
             {
-                byte[] data = new byte[stream.Length];
-                stream.Read(data, 0, data.Length);
-                AssetBundle bundle = AssetBundle.LoadFromMemory(data);
-                if (bundle != null)
+                if (stream != null)
                 {
-                    RouletteItemPrefab = bundle.LoadAsset<GameObject>("roulette_item");
-                    if (RouletteItemPrefab == null)
+                    byte[] data = new byte[stream.Length];
+                    stream.Read(data, 0, data.Length);
+                    AssetBundle bundle = AssetBundle.LoadFromMemory(data);
+                    if (bundle != null)
                     {
-                        BepinLogger.LogError("Asset 'roulette_item' not found in bundle. Assets present: " +
-                            string.Join(", ", bundle.GetAllAssetNames()));
+                        RouletteItemPrefab = bundle.LoadAsset<GameObject>("roulette_item");
+                        if (RouletteItemPrefab == null)
+                        {
+                            BepinLogger.LogError("Asset 'roulette_item' not found in bundle. Assets present: " +
+                                string.Join(", ", bundle.GetAllAssetNames()));
+                        }
                     }
+                    else
+                        BepinLogger.LogError("Failed to load asset bundle from embedded resource");
                 }
                 else
-                    BepinLogger.LogError("Failed to load asset bundle from embedded resource");
+                {
+                    BepinLogger.LogError("Embedded resource 'roulette_item' not found");
+                }
             }
-            else
-            {
-                BepinLogger.LogError("Embedded resource 'roulette_item' not found");
-            }
-        }
-        ArchipelagoClient = new ArchipelagoClient();
-        ArchipelagoConsole.Awake();
-        new Harmony(PluginGUID).PatchAll();
+            ArchipelagoClient = new ArchipelagoClient();
+            ArchipelagoConsole.Awake();
+            new Harmony(PluginGUID).PatchAll();
 
-        ArchipelagoConsole.LogMessage($"{ModDisplayInfo} loaded!");
+            ArchipelagoConsole.LogMessage($"{ModDisplayInfo} loaded!");
+        }
+        catch (Exception e)
+        {
+            Logger.LogError($"{ModDisplayInfo} FAILED TO INITIALIZE in Awake(). The mod is now in a " +
+                $"partially-loaded state and its GUI/patches may not work.{Environment.NewLine}{e}");
+        }
     }
 
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using DG.Tweening;
@@ -18,21 +19,44 @@ public static class RouletteState
 
     public static void Reset()
     {
-        SpawnerManager.PopulateAllWeapons();
-        GameObject[] allWeapons = SpawnerManager.AllWeapons;
-
-        obtained_Items.Clear();
-        unowned_items.Clear();
-        if (allWeapons != null)
+        // DIAGNOSTIC (candidate A2): this runs from a Harmony prefix on
+        // PlayerPickup.Awake(), and that method is FishNet-generated as
+        //     NetworkInitialize___Early(); Awake___UserLogic(); NetworkInitialize__Late();
+        // A throw here therefore skips NetworkInitialize___Early() entirely, so that
+        // PlayerPickup never registers its SyncVars — which would explain both the
+        // "Cannot complete operation as server when server is not active" warnings and
+        // downstream behaviours (PlayerValues.playerClient) reading back null on clients.
+        // `unowned_items[30]` below is unguarded, so any weapon list of 31 items or
+        // fewer throws. Log it and rethrow: visibility without changing behaviour.
+        try
         {
-            unowned_items.AddRange(allWeapons);
+            SpawnerManager.PopulateAllWeapons();
+            GameObject[] allWeapons = SpawnerManager.AllWeapons;
+
+            DiagLog.Log("RouletteState.Reset",
+                $"{DiagLog.NetRoles()} AllWeapons={(allWeapons == null ? "NULL" : allWeapons.Length.ToString())} " +
+                $"(needs >= 31 for the hardcoded [30] index below)");
+
+            obtained_Items.Clear();
+            unowned_items.Clear();
+            if (allWeapons != null)
+            {
+                unowned_items.AddRange(allWeapons);
+            }
+
+            if (unowned_items.Count > 0)
+            {
+                GameObject firstWeapon = unowned_items[30];
+                unowned_items.RemoveAt(30);
+                obtained_Items.Add(firstWeapon);
+            }
         }
-
-        if (unowned_items.Count > 0)
+        catch (Exception e)
         {
-            GameObject firstWeapon = unowned_items[30];
-            unowned_items.RemoveAt(30);
-            obtained_Items.Add(firstWeapon);
+            Plugin.BepinLogger.LogError(
+                $"[Diag:RouletteState.Reset] THREW — PlayerPickup.Awake() will not finish, so this " +
+                $"PlayerPickup's SyncVars never get registered.{Environment.NewLine}{e}");
+            throw;
         }
     }
 }
@@ -53,14 +77,51 @@ public class ItemSpawnerStartPatch
         // build-time registration since it's loaded at runtime from our bundle.
         // checkForDuplicates makes this safe to call from every ItemSpawner.Start().
         NetworkObject rouletteNob = Plugin.RouletteItemPrefab.GetComponent<NetworkObject>();
-        PrefabObjects spawnables = FishNet.InstanceFinder.NetworkManager?.SpawnablePrefabs;
-        if (rouletteNob != null && spawnables != null)
+        FishNet.Managing.NetworkManager networkManager = FishNet.InstanceFinder.NetworkManager;
+        PrefabObjects spawnables = networkManager?.SpawnablePrefabs;
+
+        // DIAGNOSTIC (candidate A1 — the most decisive test in this pass).
+        // FishNet's PrefabId is just the positional index into SpawnablePrefabs'
+        // List<NetworkObject>: InitializePrefab(_prefabs[i], i, CollectionId), and
+        // GetObject(asServer, id) indexes straight back into that list. Mutating this
+        // table at runtime (which vanilla never does) is only safe if every peer ends
+        // up with an IDENTICAL table. Note the null-conditional above: on a joining
+        // client whose NetworkManager isn't ready yet, registration is skipped
+        // SILENTLY, leaving that client's table one entry short and every subsequent
+        // spawn message resolving against the wrong index.
+        // Compare PrefabId/count between the host's log and the client's — if they
+        // differ, this is the bug.
+        if (DiagnosticFlags.SkipPrefabRegistration)
         {
+            DiagLog.Log("PrefabRegistration", "SKIPPED via DiagnosticFlags.SkipPrefabRegistration");
+        }
+        else if (rouletteNob != null && spawnables != null)
+        {
+            int countBefore = spawnables.GetObjectCount();
             spawnables.AddObject(rouletteNob, true);
-            //Plugin.BepinLogger.LogInfo($"Roulette Item prefab registered: PrefabId={rouletteNob.PrefabId}, CollectionId={rouletteNob.SpawnableCollectionId}");
+            DiagLog.Log("PrefabRegistration",
+                $"registered on this peer. {DiagLog.NetRoles()} spawner={__instance.gameObject.name} " +
+                $"countBefore={countBefore} countAfter={spawnables.GetObjectCount()} " +
+                $"PrefabId={rouletteNob.PrefabId} CollectionId={rouletteNob.SpawnableCollectionId}");
+        }
+        else
+        {
+            // The silent-skip path. If this ever appears in a client log, A1 is confirmed.
+            DiagLog.Log("PrefabRegistration",
+                $"!! SKIPPED — table not mutated on this peer. {DiagLog.NetRoles()} " +
+                $"spawner={__instance.gameObject.name} " +
+                $"NetworkManager={(networkManager == null ? "NULL" : "ok")} " +
+                $"SpawnablePrefabs={(spawnables == null ? "NULL" : "ok")} " +
+                $"rouletteNob={(rouletteNob == null ? "NULL" : "ok")}");
         }
 
         if (!FishNet.InstanceFinder.IsServer) return;
+
+        if (DiagnosticFlags.SkipRouletteSpawnerReplacement)
+        {
+            DiagLog.Log("SpawnerReplacement", "SKIPPED via DiagnosticFlags.SkipRouletteSpawnerReplacement");
+            return;
+        }
 
         // Spawn the roulette item at the item spawner's position
         string itemName = __instance.itemToSpawn?.name ?? "null";
@@ -68,6 +129,19 @@ public class ItemSpawnerStartPatch
         ItemBehaviour ib = __instance.itemToSpawn.GetComponent<ItemBehaviour>();
         Traverse t = Traverse.Create(ib);
         t.Field("dispenserStart").SetValue(false);
+
+        // DIAGNOSTIC (candidate C1): `ib` here is the component on the shared PREFAB
+        // asset, not on a scene instance — so this dispenserStart=false write persists
+        // into every roulette ever spawned, on every round. Vanilla ItemBehaviour.Start()
+        // dereferences transform.parent.up when dispenserStart is false, and while the
+        // server parents its instance to the spawner, the copies FishNet creates on
+        // clients have no parent at all. scene==null below means "this is the prefab
+        // asset", which is the condition that makes the write global.
+        DiagLog.Log("SpawnerReplacement",
+            $"spawner={__instance.gameObject.name} replaced '{itemName}' with roulette prefab. " +
+            $"mutatedObject={ib.gameObject.name} " +
+            $"isPrefabAsset={(!ib.gameObject.scene.IsValid() ? "YES (write is global)" : "no (scene instance)")} " +
+            $"dispenserStart now={t.Field("dispenserStart").GetValue<bool>()}");
         //Plugin.BepinLogger.LogInfo("dispenserStart is now " + t.Field("dispenserStart").GetValue<bool>());
         //Plugin.BepinLogger.LogInfo("Replaced " + itemName + " spawnerwith Roulette Item Prefab");
         //Plugin.BepinLogger.LogInfo("ItemSpawner Start called, spawning Roulette Item at " + __instance.transform.position);
@@ -468,9 +542,27 @@ public class WeaponAnimationDebugPatch
 [HarmonyPatch(typeof(PlayerPickup), "Awake")]
 public class PlayerPickupAwakePatch
 {
-    static void Prefix()
+    static void Prefix(PlayerPickup __instance)
     {
+        // DIAGNOSTIC: this prefix injects synchronous work into the Awake() of every
+        // player object on every peer. On a joining client those Awakes all happen in
+        // one burst as FishNet processes the initial spawn messages, so anything slow
+        // here shifts the timing of everything else coming up on that prefab
+        // (PlayerValues / HUDTween live on the same object). Time it to see whether
+        // that is plausible or negligible. See also the A2 note in RouletteState.Reset.
+        if (DiagnosticFlags.SkipRouletteResetOnAwake)
+        {
+            DiagLog.Log("PlayerPickup.Awake", "RouletteState.Reset() SKIPPED via DiagnosticFlags");
+            return;
+        }
+
+        Stopwatch sw = Stopwatch.StartNew();
         RouletteState.Reset();
+        sw.Stop();
+
+        DiagLog.Log("PlayerPickup.Awake",
+            $"RouletteState.Reset() took {sw.Elapsed.TotalMilliseconds:F2}ms " +
+            $"obj={__instance.gameObject.name} {DiagLog.NetRoles()}");
     }
 }
 
@@ -860,5 +952,47 @@ Plan for choosing random item
 1. each player has a list instance of gameobjects that they can randomly get.
 2. every time they earn a new weapon, it is simpily added to the list.
 3. when a roulette item is picked up it will choose the weapon from the list with the random(0, item_list.length)
-4. the item is spawned in the player's hand using thr mehod from above. 
+4. the item is spawned in the player's hand using thr mehod from above.
+*/
+
+
+/*
+================================================================================
+TODO (deferred): make the roulette pool PER-PLAYER instead of one global list.
+================================================================================
+Currently every player rolls from the HOST's pool. Three separate problems:
+
+1. RouletteState is a single global `static` pair of lists, and the roll in
+   GrabPatches.Postfix is gated behind `if (!InstanceFinder.IsServer) return;`.
+   So only the server ever rolls, always out of that one shared list.
+   It should roll from the pool belonging to whoever picked the item up, i.e.
+   key the state per NetworkConnection (`pp.Owner`) rather than globally.
+   Note GrabPatches.Postfix currently resolves `pp` AFTER the roll — that line
+   has to move above the roll before `pp.Owner` can be used for it.
+
+2. RouletteState.Reset() is called from PlayerPickupAwakePatch, i.e. on EVERY
+   PlayerPickup.Awake(). PlayerManager respawns a brand-new player object every
+   round for every player, so Awake() fires fresh each round and the pool gets
+   wiped mid-match, repeatedly.
+
+3. The starter item is `unowned_items[30]` — an unguarded hardcoded index whose
+   meaning depends entirely on Resources.LoadAll ordering, which Unity does not
+   guarantee. It also throws outright if the list has 31 items or fewer (see
+   the A2 candidate in the crash investigation — a throw in an Awake prefix
+   skips FishNet's NetworkInitialize___Early() and never registers that
+   behaviour's SyncVars). SpawnerManager.NameToWeaponDict is the safe lookup,
+   and is also the natural seam for the eventual Archipelago hook
+   (something like GrantByName(conn, weaponName)).
+
+Implementation note for whoever picks this up: this mod is built externally with
+plain `dotnet build` and therefore never runs FishNet's codegen weaver, so new
+[ServerRpc]/[ObserversRpc] methods are NOT available to us. The runtime
+Broadcast API does work: ClientManager.Broadcast<T> / ServerManager
+.RegisterBroadcast<T> where T : struct, IBroadcast. The catch is that the weaver
+is also what normally auto-registers each type's serializer delegates, so for
+any struct we define ourselves we must assign
+FishNet.Serializing.GenericWriter<T>.Write and GenericReader<T>.Read manually at
+startup (they're public-settable statics) or the broadcast silently no-ops.
+Worth a small send/receive smoke test before building anything on top of it.
+================================================================================
 */
