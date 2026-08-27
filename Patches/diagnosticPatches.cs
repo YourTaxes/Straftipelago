@@ -51,6 +51,21 @@ public static class DiagnosticFlags
 
     /// <summary>Skips replacing ItemSpawner.itemToSpawn with the roulette prefab (tests candidate C1).</summary>
     public static bool SkipRouletteSpawnerReplacement = false;
+
+    /// <summary>
+    /// OnGrab still observes and logs, but never rolls or sends. Separates "the roll broke
+    /// it" from "the Roulette Item itself broke it" — the first thing to try when the
+    /// two-player run goes wrong.
+    /// </summary>
+    public static bool SkipRouletteRoll = false;
+
+    /// <summary>
+    /// The [RR:...] roll trace. On by default: these are one line per step per roll, not
+    /// per frame, so the volume is fine, and a two-player repro is expensive enough that
+    /// the first run needs to explain itself. Turn down once the trace is consistently
+    /// clean — the instrumentation stays either way.
+    /// </summary>
+    public static bool VerboseRouletteLogging = true;
 }
 
 /// <summary>
@@ -85,6 +100,27 @@ public static class DiagLog
     public static void Log(string label, string message)
     {
         Plugin.BepinLogger.LogInfo($"[Diag:{label}] frame={Time.frameCount} {message}");
+    }
+
+    /// <summary>
+    /// One step of a roulette roll. The roll crosses two machines, so a failure can land in
+    /// any of six places and the visible symptom (a weapon on the ground, or nothing at all)
+    /// is identical for all of them — these lines are what tell them apart, and
+    /// `grep '\[RR:'` over either peer's LogOutput.log extracts the whole trace.
+    ///
+    /// The rollId matters more than it looks: two players rolling in the same second produce
+    /// interleaved lines across two separate log files, and without the id there is no way
+    /// to stitch a client's [RR:roll] to the host's [RR:server-spawn].
+    ///
+    /// Expected healthy sequence for one roll:
+    ///     grab -> roll -> send      (owner client)
+    ///     server-spawn              (host)
+    ///     setspawned -> equip -> equipped -> despawn   (owner client)
+    /// </summary>
+    public static void RR(int rollId, string step, string message)
+    {
+        if (!DiagnosticFlags.VerboseRouletteLogging) return;
+        Plugin.BepinLogger.LogInfo($"[RR:{step} #{rollId}] frame={Time.frameCount} {message}");
     }
 
     /// <summary>Unity's == is overloaded so destroyed-but-not-collected objects report null too, which is what we want here.</summary>
@@ -200,9 +236,14 @@ public class PlayerManagerPlayerDiagPatch
 {
     static void Prefix(PlayerManager __instance)
     {
+        // NOTE ON READING THIS LINE: LogOnChange prints the first observation of every object,
+        // so a `player=null` here is normal before SpawnPlayer() has run and only means
+        // "joined mid match" if it STAYS null — the game's own check runs much later. Look for
+        // a following line on the same id with player=ok before concluding anything; if one
+        // arrives, this was just startup ordering.
         DiagLog.LogOnChange(__instance, "PlayerManager.player",
             $"IsOwner={__instance.IsOwner} {DiagLog.NetRoles()} " +
-            $"player={(__instance.player == null ? "NULL (=> 'joined mid match')" : "ok")} " +
+            $"player={(__instance.player == null ? "null (fine before SpawnPlayer; only a problem if it stays null)" : "ok")} " +
             $"SpawnedObject={DiagLog.Describe(Traverse.Create(__instance).Field("SpawnedObject").GetValue<GameObject>())}");
     }
 }
@@ -303,6 +344,10 @@ public class PlayerPickupOnStartClientDiagPatch
         Transform[] left = t.Field("pickupPositionLeftHand").GetValue<Transform[]>();
         Transform[] both = pp.pickupPositionBothHand;
 
+        // The PlayerSpawnObject probe that used to be here has served its purpose: it proved
+        // that component is NOT on the player prefab, which is why the roulette roll goes over
+        // Mycelium instead of a vanilla ServerRpc. Recorded in RouletteNet's class comment
+        // rather than re-tested every spawn.
         return $"{note} obj={pp.gameObject.name} IsOwner={pp.IsOwner} {DiagLog.NetRoles()} " +
                $"cam={(t.Field("cam").GetValue<Camera>() == null ? "NULL" : "ok")} " +
                $"playerController={(t.Field("playerController").GetValue<FirstPersonController>() == null ? "NULL" : "ok")} " +
@@ -357,6 +402,44 @@ public class ItemSpawnerStartTimingDiagPatch
         __state.Stop();
         DiagLog.Log("ItemSpawner.Start",
             $"spawner={__instance.gameObject.name} took {__state.Elapsed.TotalMilliseconds:F2}ms " +
+            $"{DiagLog.NetRoles()}");
+    }
+}
+
+/// <summary>
+/// The server half of a roulette roll: vanilla PlayerSpawnObject's ServerRpc body, which
+/// Instantiates the prefab the client chose and network-spawns it.
+///
+/// The reason this exists is the prefabId field. A prefab crosses the wire as a POSITIONAL
+/// PrefabId into each peer's SpawnablePrefabs list, so if the client's table and the host's
+/// table disagree, the server spawns a DIFFERENT weapon than the client rolled — silently,
+/// and with no symptom other than "I got the wrong gun". Diffing this line's prefabId
+/// against the client's [RR:roll] prefabId is the only way to catch that, and it cannot be
+/// reconstructed after the run. (That table disagreement is crash candidate A1.)
+///
+/// There is no rollId here: the id lives on the client that issued the roll, and vanilla's
+/// RPC has nowhere to carry it. Match these up by weapon name and frame instead.
+/// </summary>
+[HarmonyPatch(typeof(PlayerSpawnObject), "RpcLogic___SpawnObject_1585589339")]
+public class PlayerSpawnObjectServerDiagPatch
+{
+    static void Postfix(PlayerSpawnObject __instance, GameObject obj, Transform player)
+    {
+        FishNet.Object.NetworkObject prefabNob = obj == null ? null : obj.GetComponent<FishNet.Object.NetworkObject>();
+
+        // spawnedObject is assigned by the SetSpawnedObject OBSERVERS rpc, which the server
+        // only sends here — it arrives back on a later tick — so this reads as not-yet-set
+        // and that is normal, not a failure. resolvedPrefab/prefabId are the fields that
+        // matter for the cross-log diff; they come straight from the RPC argument.
+        GameObject spawned = __instance.spawnedObject;
+
+        DiagLog.Log("RR:server-spawn",
+            $"requestedBy={(__instance.Owner == null ? "null" : __instance.Owner.ClientId.ToString())} " +
+            $"resolvedPrefab={DiagLog.Describe(obj)} " +
+            $"prefabId={(prefabNob == null ? "NO-NETWORKOBJECT" : prefabNob.PrefabId.ToString())} " +
+            $"collectionId={(prefabNob == null ? "n/a" : prefabNob.SpawnableCollectionId.ToString())} " +
+            $"previousSpawnedObject={DiagLog.Describe(spawned)} " +
+            $"position={(player == null ? "player NULL" : player.position.ToString())} " +
             $"{DiagLog.NetRoles()}");
     }
 }

@@ -20,9 +20,15 @@ namespace Straftapelago.Finnegan_McD.org;
 
 
 
+// Mycelium carries the roulette roll from the player who made it to the host. It is required,
+// not optional: without it a picked-up Roulette Item rolls a weapon and then has no way to ask
+// the server to spawn it. See RouletteNet for why the game's own RPCs cannot do this.
+[BepInDependency(MyceliumDependencyGUID)]
 [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
 public class Plugin : BaseUnityPlugin
 {
+    public const string MyceliumDependencyGUID = "RugbugRedfern.MyceliumNetworking";
+
     public const string PluginGUID = "org.Finnegan_McD.Straftapelago";
     public const string PluginName = "Straftapelago.Finnegan_McD.org";
     public const string PluginVersion = "1.0.0";
@@ -122,6 +128,17 @@ public class Plugin : BaseUnityPlugin
                 BepinLogger.LogError($"Failed to initialize ArchipelagoConsole: {e}");
             }
             
+            // Before PatchAll, so the roulette's RPCs are registered by the time any patch
+            // could fire. Mycelium is loaded ahead of this plugin by the BepInDependency above.
+            try
+            {
+                RouletteNet.Install();
+            }
+            catch (Exception e)
+            {
+                BepinLogger.LogError($"Failed to register roulette RPCs with Mycelium: {e}");
+            }
+
             new Harmony(PluginGUID).PatchAll();
 
             // Must be a GameObject we own; this plugin component is destroyed on

@@ -7,57 +7,285 @@ using DG.Tweening;
 using FishNet.Managing.Object;
 using FishNet.Object;
 using HarmonyLib;
+using Straftapelago.Finnegan_McD.org.Utils;
 using UnityEngine;
 
 namespace Straftapelago.Finnegan_McD.org.Patches;
 
-// Shared roulette item pools, accessible from any patch class.
+// The LOCAL player's roulette pools, accessible from any patch class.
+//
+// This is one player's unlocks and nothing else. The roll happens on the peer that owns the
+// player who grabbed the Roulette Item (see GrabPatches), and only the single chosen prefab
+// ever crosses the wire — no peer is ever told what another peer's pool contains. That is
+// why one static pair of lists is still enough here: a process only ever tracks the unlocks
+// of the player sitting in front of it.
 public static class RouletteState
 {
     public static List<GameObject> obtained_Items = new();
     public static List<GameObject> unowned_items = new();
 
+    // The starter unlocks from Design_Doc.txt: a pistol plus the stun weapons. Matched
+    // case-insensitively against SpawnerManager.NameToWeaponDict, because the Resources
+    // paths are lowercased ("randomweapons/glock") while that dictionary is keyed on each
+    // prefab's own GameObject.name, whose casing this mod does not control.
+    private static readonly string[] StarterWeapons = { "glock", "taser", "stungrenade", "stunmine" };
+
+    private static bool initialized;
+    private static Dictionary<string, GameObject> nameLookup;
+
+    /// <summary>
+    /// Builds the pool once and then never again. This is all PlayerPickup.Awake() is
+    /// allowed to call: Awake() fires for every player object every round, so calling
+    /// Reset() from there wiped the pool mid-match, repeatedly, which is why a roll never
+    /// had more than the one starter weapon to choose between.
+    /// </summary>
+    public static void EnsureInitialized()
+    {
+        if (initialized) return;
+        Reset();
+    }
+
+    /// <summary>
+    /// Full rebuild, every call — unlike EnsureInitialized this always does the work.
+    /// Only the O debug key and the first EnsureInitialized() reach it.
+    /// </summary>
     public static void Reset()
     {
-        // DIAGNOSTIC (candidate A2): this runs from a Harmony prefix on
-        // PlayerPickup.Awake(), and that method is FishNet-generated as
-        //     NetworkInitialize___Early(); Awake___UserLogic(); NetworkInitialize__Late();
-        // A throw here therefore skips NetworkInitialize___Early() entirely, so that
-        // PlayerPickup never registers its SyncVars — which would explain both the
-        // "Cannot complete operation as server when server is not active" warnings and
-        // downstream behaviours (PlayerValues.playerClient) reading back null on clients.
-        // `unowned_items[30]` below is unguarded, so any weapon list of 31 items or
-        // fewer throws. Log it and rethrow: visibility without changing behaviour.
-        try
+        SpawnerManager.PopulateAllWeapons();
+        GameObject[] allWeapons = SpawnerManager.AllWeapons;
+
+        obtained_Items.Clear();
+        unowned_items.Clear();
+        nameLookup = null;
+
+        if (allWeapons != null)
         {
-            SpawnerManager.PopulateAllWeapons();
-            GameObject[] allWeapons = SpawnerManager.AllWeapons;
-
-            DiagLog.Log("RouletteState.Reset",
-                $"{DiagLog.NetRoles()} AllWeapons={(allWeapons == null ? "NULL" : allWeapons.Length.ToString())} " +
-                $"(needs >= 31 for the hardcoded [30] index below)");
-
-            obtained_Items.Clear();
-            unowned_items.Clear();
-            if (allWeapons != null)
+            foreach (GameObject weapon in allWeapons)
             {
-                unowned_items.AddRange(allWeapons);
-            }
-
-            if (unowned_items.Count > 0)
-            {
-                GameObject firstWeapon = unowned_items[30];
-                unowned_items.RemoveAt(30);
-                obtained_Items.Add(firstWeapon);
+                // A null here would later read as a "roll" that silently produces nothing,
+                // which looks exactly like a skewed distribution. Keep them out entirely.
+                if (weapon != null) unowned_items.Add(weapon);
             }
         }
-        catch (Exception e)
+
+        initialized = true;
+        SeedStarters();
+
+        DiagLog.Log("RouletteState.Reset",
+            $"{DiagLog.NetRoles()} AllWeapons={(allWeapons == null ? "NULL" : allWeapons.Length.ToString())} " +
+            $"unowned={unowned_items.Count} obtained={obtained_Items.Count}");
+        LogPool();
+    }
+
+    /// <summary>
+    /// Seeds the starting unlocks by NAME. This replaces a hardcoded `unowned_items[30]`,
+    /// which depended on Resources.LoadAll ordering that Unity does not guarantee and threw
+    /// outright on a short list — and a throw here is not survivable, because Reset() is
+    /// reached from a Harmony prefix on PlayerPickup.Awake(), which FishNet generates as
+    ///     NetworkInitialize___Early(); Awake___UserLogic(); NetworkInitialize__Late();
+    /// so throwing skips NetworkInitialize___Early() and that PlayerPickup never registers
+    /// its SyncVars (crash-investigation candidate A2). Nothing below indexes unguarded.
+    /// </summary>
+    private static void SeedStarters()
+    {
+        foreach (string starter in StarterWeapons)
         {
-            Plugin.BepinLogger.LogError(
-                $"[Diag:RouletteState.Reset] THREW — PlayerPickup.Awake() will not finish, so this " +
-                $"PlayerPickup's SyncVars never get registered.{Environment.NewLine}{e}");
-            throw;
+            if (!GrantByName(starter))
+            {
+                Plugin.BepinLogger.LogWarning(
+                    $"[RouletteState] starter weapon '{starter}' did not resolve through " +
+                    "SpawnerManager.NameToWeaponDict; skipping it.");
+            }
         }
+
+        if (obtained_Items.Count == 0 && unowned_items.Count > 0)
+        {
+            Plugin.BepinLogger.LogWarning(
+                "[RouletteState] no starter weapon resolved by name; falling back to the first " +
+                "entry in the weapon list so the pool is never empty.");
+            Grant(unowned_items[0]);
+        }
+    }
+
+    /// <summary>The single mutation point for the pool. Also the seam for a future Archipelago hook.</summary>
+    public static bool Grant(GameObject weapon)
+    {
+        if (weapon == null) return false;
+
+        // A duplicate would give that weapon two entries and therefore double its odds,
+        // which is exactly the "equal chance" guarantee this needs to hold.
+        if (obtained_Items.Contains(weapon)) return false;
+
+        unowned_items.Remove(weapon);
+        obtained_Items.Add(weapon);
+        LogPool();
+        return true;
+    }
+
+    /// <summary>Name-keyed grant — what an Archipelago item receipt will eventually call.</summary>
+    public static bool GrantByName(string weaponName)
+    {
+        GameObject weapon = Lookup(weaponName);
+        return weapon != null && Grant(weapon);
+    }
+
+    /// <summary>Case-insensitive lookup over the game's own name-to-prefab dictionary.</summary>
+    public static GameObject Lookup(string weaponName)
+    {
+        if (string.IsNullOrEmpty(weaponName)) return null;
+
+        if (nameLookup == null)
+        {
+            Dictionary<string, GameObject> source = SpawnerManager.NameToWeaponDict;
+            if (source == null) return null;
+
+            nameLookup = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
+            foreach (KeyValuePair<string, GameObject> pair in source)
+            {
+                if (pair.Key != null && pair.Value != null) nameLookup[pair.Key] = pair.Value;
+            }
+        }
+
+        return nameLookup.TryGetValue(weaponName, out GameObject weapon) ? weapon : null;
+    }
+
+    /// <summary>
+    /// The equal-chance guarantee. Random.Range(int, int) is max-exclusive and uniform, so
+    /// the only ways the draw could be biased are a duplicate entry (blocked in Grant) or a
+    /// destroyed entry that produces a no-op roll — hence the compaction pass first, which
+    /// reports what it removed rather than hiding it.
+    /// </summary>
+    public static GameObject Roll(int rollId)
+    {
+        EnsureInitialized();
+
+        int compactedNulls = obtained_Items.RemoveAll(item => item == null);
+        int poolCount = obtained_Items.Count;
+        if (poolCount == 0)
+        {
+            DiagLog.RR(rollId, "roll", $"poolCount=0 compactedNulls={compactedNulls} — nothing to roll");
+            return null;
+        }
+
+        int index = UnityEngine.Random.Range(0, poolCount);
+        GameObject prefab = obtained_Items[index];
+        NetworkObject nob = prefab.GetComponent<NetworkObject>();
+
+        // prefabId/collectionId are logged here AND on the server's spawn so the two can be
+        // diffed across the two machines' logs. That comparison is the only decisive test
+        // for whether the peers' SpawnablePrefabs tables agree, and it cannot be
+        // reconstructed after the fact.
+        DiagLog.RR(rollId, "roll",
+            $"poolCount={poolCount} index={index} prefab={prefab.name} " +
+            $"prefabId={(nob == null ? "NO-NETWORKOBJECT" : nob.PrefabId.ToString())} " +
+            $"collectionId={(nob == null ? "n/a" : nob.SpawnableCollectionId.ToString())} " +
+            $"compactedNulls={compactedNulls}");
+
+        return prefab;
+    }
+
+    /// <summary>
+    /// Debug self-test behind the K key: draws many times and reports the spread, so
+    /// "every obtained weapon has an equal chance" is a number in the log rather than a
+    /// claim about the code.
+    /// </summary>
+    public static void SelfTest(int iterations)
+    {
+        int poolCount = obtained_Items.Count;
+        if (poolCount == 0)
+        {
+            Plugin.BepinLogger.LogInfo("[RouletteState] self-test skipped: pool is empty");
+            return;
+        }
+
+        int[] histogram = new int[poolCount];
+        for (int i = 0; i < iterations; i++) histogram[UnityEngine.Random.Range(0, poolCount)]++;
+
+        double expected = (double)iterations / poolCount;
+        double worstDeviation = 0d;
+        var report = new System.Text.StringBuilder();
+        for (int i = 0; i < poolCount; i++)
+        {
+            double deviation = Math.Abs(histogram[i] - expected) / expected * 100d;
+            if (deviation > worstDeviation) worstDeviation = deviation;
+            report.AppendLine($"  [{i}] {(obtained_Items[i] == null ? "null" : obtained_Items[i].name)}: " +
+                $"{histogram[i]} ({deviation:F2}% off expected)");
+        }
+
+        Plugin.BepinLogger.LogInfo(
+            $"[RouletteState] uniformity self-test: {iterations} draws over {poolCount} weapons, " +
+            $"expected {expected:F1} each, worst deviation {worstDeviation:F2}%{Environment.NewLine}{report}");
+    }
+
+    /// <summary>Numbered dump of the local player's unlocks. Called on every change and every roll.</summary>
+    public static void LogPool()
+    {
+        string obtainedList = string.Join(Environment.NewLine,
+            obtained_Items.Select((item, i) => $"  [{i}] {(item == null ? "null" : item.name)}"));
+        Plugin.BepinLogger.LogInfo(
+            $"obtained_Items ({obtained_Items.Count} total, {unowned_items.Count} still locked):" +
+            $"{Environment.NewLine}{obtainedList}");
+    }
+}
+
+/// <summary>
+/// One-slot latch for a roll that has been sent to the server and is waiting on the
+/// SetSpawnedObject observers RPC to come back. Only ever set on the peer that owns the
+/// grabbing player, so a single slot is enough.
+/// </summary>
+internal static class PendingRoll
+{
+    // Generous: this covers a network round trip, not a game rule. If it ever expires we
+    // want the log line, not a silently swallowed roll.
+    private const int TimeoutFrames = 300;
+
+    private static int nextRollId = 1;
+
+    public static bool IsArmed;
+    public static int RollId;
+    public static PlayerPickup Pickup;
+    public static bool RightHand;
+    public static ItemBehaviour Roulette;
+    public static int ArmedFrame;
+    public static string LastStep = "none";
+
+    public static int NextRollId() => nextRollId++;
+
+    public static void Arm(int rollId, PlayerPickup pickup, bool rightHand, ItemBehaviour roulette)
+    {
+        IsArmed = true;
+        RollId = rollId;
+        Pickup = pickup;
+        RightHand = rightHand;
+        Roulette = roulette;
+        ArmedFrame = Time.frameCount;
+        LastStep = "send";
+    }
+
+    public static void Disarm()
+    {
+        IsArmed = false;
+        Pickup = null;
+        Roulette = null;
+    }
+
+    /// <summary>
+    /// Pumped from PlayerPickupUpdatePatch. Without this a lost request would leave the
+    /// latch set, and the next unrelated PlayerSpawnObject spawn would be mistaken for the
+    /// answer to it.
+    /// </summary>
+    public static void CheckTimeout()
+    {
+        if (!IsArmed || Time.frameCount - ArmedFrame < TimeoutFrames) return;
+
+        DiagLog.RR(RollId, "timeout",
+            $"waitedFrames={Time.frameCount - ArmedFrame} lastStepReached={LastStep} — " +
+            "no SetSpawnedObject came back. Check the HOST's log for a matching [RR:server-spawn] " +
+            "to tell 'never sent' from 'never came back'.");
+
+        // The roulette is still in hand and would stay there forever otherwise.
+        if (Roulette != null) GrabPatches.DespawnRoulette(RollId, Roulette);
+        Disarm();
     }
 }
 
@@ -160,243 +388,235 @@ public class ItemSpawnerSpawnPatch
 
 //all patches for the item behaviour class related to the roulette item. This is where the pickup and drop logic is handled.
 
+// The roulette roll, in three parts across two machines:
+//
+//   1. GrabPatches.Postfix   — on the peer that OWNS the grabbing player: roll from the
+//                              local pool, then hand the chosen prefab to the server through
+//                              the vanilla PlayerSpawnObject.SpawnObject ServerRpc.
+//   2. vanilla server logic  — RpcLogic___SpawnObject instantiates and network-spawns it,
+//                              then answers every peer with the SetSpawnedObject observers RPC.
+//   3. PlayerSpawnObjectSetSpawnedPatch — back on the owner: equip it through the same
+//                              vanilla path RightHandPickup() uses.
+//
+// Only the one chosen prefab ever crosses the wire, so no peer learns another peer's pool.
+// FishNet serializes an UNSPAWNED prefab by PrefabId + SpawnableCollectionId (see
+// Writer.WriteNetworkObject), which is what makes step 1 possible without any custom
+// networking of our own — and also why the peers' SpawnablePrefabs tables have to agree.
 [HarmonyPatch(typeof(ItemBehaviour), "OnGrab")]
 public class GrabPatches
 {
     static void Postfix(ItemBehaviour __instance, bool owner, bool rightHand)
     {
-        Plugin.BepinLogger.LogInfo("OnGrab called on weapon " + __instance.weaponName);
-
         if (__instance.weaponName != "Roulette Item") return;
-        if (!FishNet.InstanceFinder.IsServer) return;
 
-        GameObject[] allWeapons = RouletteState.obtained_Items.ToArray();
-        if (allWeapons == null || allWeapons.Length == 0)
+        int rollId = PendingRoll.NextRollId();
+        try
         {
-            Plugin.BepinLogger.LogError("RouletteState.obtained_Items is empty; cannot roll a random weapon for Roulette Item");
+            BeginRoll(rollId, __instance, owner, rightHand);
+        }
+        catch (Exception e)
+        {
+            // Deliberately swallowed. OnGrab is reached from FishNet-generated RPC logic, and
+            // an exception escaping a Harmony patch there abandons the rest of that RPC's work
+            // on this peer — the same failure shape as crash candidate A2, one level up.
+            Plugin.BepinLogger.LogError($"[RR:grab #{rollId}] THREW{Environment.NewLine}{e}");
+        }
+    }
+
+    static void BeginRoll(int rollId, ItemBehaviour ib, bool onGrabOwnerParam, bool rightHand)
+    {
+        GameObject root = ib.rootObject;
+        PlayerPickup pp = root == null ? null : root.GetComponent<PlayerPickup>();
+
+        // onGrabOwnerParam is logged next to pp.IsOwner because vanilla's `owner` argument
+        // looks like it means the same thing, and one run of this line settles whether it
+        // does. pp.IsOwner is what the gate below actually trusts either way.
+        DiagLog.RR(rollId, "grab",
+            $"weapon={ib.weaponName} rootObject={(root == null ? "NULL" : root.name)} " +
+            $"pp={(pp == null ? "NULL" : "ok")} pp.IsOwner={(pp == null ? "n/a" : pp.IsOwner.ToString())} " +
+            $"onGrabOwnerParam={onGrabOwnerParam} rightHand={rightHand} {DiagLog.NetRoles()}");
+
+        // OnGrab runs on every observer, so exactly one peer passes this gate: the one whose
+        // local player did the grabbing. It rolls from ITS OWN pool. This used to be gated on
+        // IsServer, which is why every player was really rolling from the host's unlocks.
+        if (pp == null || !pp.IsOwner) return;
+
+        if (DiagnosticFlags.SkipRouletteRoll)
+        {
+            DiagLog.RR(rollId, "grab", "roll SKIPPED via DiagnosticFlags.SkipRouletteRoll");
             return;
         }
 
-        int randomIndex = UnityEngine.Random.Range(0, allWeapons.Length);
-        GameObject weaponPrefab = allWeapons[randomIndex];
-        if (weaponPrefab == null) return;
-
-        // Step 1: arm the roulette's own Gun so it survives the hand-swap below without
-        // despawning itself prematurely, and so it can later trigger a clean vanilla
-        // out-of-ammo despawn instead of us destroying it directly.
-        Gun rouletteGun = __instance.GetComponent<Gun>();
-        if (rouletteGun == null)
+        GameObject prefab = RouletteState.Roll(rollId);
+        if (prefab == null)
         {
-            Plugin.BepinLogger.LogError("Roulette Item has no Gun component; aborting roulette roll");
+            Plugin.BepinLogger.LogError(
+                $"[RR:roll #{rollId}] obtained_Items is empty; cannot roll a weapon for the Roulette Item");
             return;
         }
-        rouletteGun.sync___set_value_currentAmmo(1, true);
-        Traverse.Create(rouletteGun).Field("inHandDespawn").SetValue(false);
-        rouletteGun.noAmmoClicks = 1;
 
-        // Step 2a: WeaponUpdate() normally refreshes rootObject/playerController from the
-        // ItemBehaviour every frame, but it never runs for the Roulette Item
-        // (RouletteGunUpdatePatch blocks Gun.Update() entirely), and Gun.Fire() (called at
-        // the end, below) needs them. Cache them onto the Gun's own fields now, before
-        // anything drops the roulette and nulls these fields on the ItemBehaviour.
-        GameObject cachedRootObject = __instance.rootObject;
-        FirstPersonController cachedPlayerController = __instance.playerController;
-        if (cachedRootObject == null)
+        // Arm BEFORE sending. On the host, Mycelium delivers a message addressed to the local
+        // Steam id synchronously, so the host's reply can come back inside this very call —
+        // arming afterwards would mean the reply arrives to an unarmed latch and is dropped.
+        PendingRoll.Arm(rollId, pp, rightHand, ib);
+
+        DiagLog.RR(rollId, "send",
+            $"weapon={prefab.name} to host via Mycelium " +
+            $"IsClient={FishNet.InstanceFinder.IsClient} IsServer={FishNet.InstanceFinder.IsServer}");
+
+        if (!RouletteNet.RequestSpawn(rollId, prefab.name, rightHand))
         {
-            Plugin.BepinLogger.LogError("Roulette Item OnGrab: rootObject is null, cannot resolve PlayerPickup");
-            return;
+            PendingRoll.Disarm();
         }
-        rouletteGun.rootObject = cachedRootObject;
-        rouletteGun.playerController = cachedPlayerController;
+    }
 
-        PlayerPickup pp = cachedRootObject.GetComponent<PlayerPickup>();
+    /// <summary>
+    /// Equips the weapon the server just spawned, using the same sequence vanilla
+    /// RightHandPickup()/LeftHandPickup() use on the owner: set the sync vars, then call the
+    /// SetObjectInHandServer ServerRpc (which this client may do, because PlayerPickup is
+    /// its own). Nothing here is reentrant any more — vanilla's pickup of the Roulette Item
+    /// finished several frames ago — so the sync-var normalisation and early cam assignment
+    /// the old in-OnGrab version needed are gone.
+    /// </summary>
+    public static void EquipRolledWeapon(int rollId, PlayerPickup pp, bool rightHand, GameObject spawned)
+    {
         Traverse ppT = Traverse.Create(pp);
         Camera cam = ppT.Field("cam").GetValue<Camera>();
-
-        // Debug: dump both hands' PlayerPickup sync-var state. Unity "destroyed" objects
-        // still compare == null via Unity's overload, so this also surfaces dangling
-        // references safely instead of throwing.
-        void LogHandState(string label)
-        {
-            bool hasRight = pp.sync___get_value_hasObjectInHand();
-            GameObject objRight = pp.sync___get_value_objInHand();
-            bool hasLeft = pp.sync___get_value_hasObjectInLeftHand();
-            GameObject objLeft = pp.sync___get_value_objInLeftHand();
-            Plugin.BepinLogger.LogInfo(
-                $"[Roulette:{label}] hasObjectInHand={hasRight} objInHand={(objRight == null ? "null" : objRight.name)} | " +
-                $"hasObjectInLeftHand={hasLeft} objInLeftHand={(objLeft == null ? "null" : objLeft.name)}");
-        }
-        LogHandState("start");
-
-        // The vanilla OnGrab caller only assigns ItemBehaviour.cam AFTER OnGrab() returns,
-        // but the hand-swap below calls PlayerPickup.RightHandDrop()/LeftHandDrop() on the
-        // roulette itself while still inside OnGrab — those internally call
-        // ItemBehaviour.StickOnGround(), which dereferences cam.transform and NREs if it's
-        // still null. Assign it early; the caller reassigning the same value afterwards is harmless.
-        __instance.cam = cam;
-
-        // Vanilla RightHandPickup() sets hasObjectInHand/objInHand BEFORE calling
-        // SetObjectInHandServer (whose chain fires OnGrab), but LeftHandPickup() calls
-        // SetObjectInHandServer FIRST and only sets hasObjectInLeftHand/objInLeftHand
-        // afterward — so on a left-hand roulette pickup, those sync vars are still
-        // false/stale right here, which would make LeftHandDrop() below silently no-op
-        // instead of actually detaching the roulette (its guard clause checks this sync
-        // var). Normalize both hands to the same "roulette is currently held" state so
-        // the rest of this method can treat left/right symmetrically.
-        if (rightHand)
-        {
-            ppT.Method("sync___set_value_objInHand", __instance.gameObject, true).GetValue();
-            ppT.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
-        }
-        else
-        {
-            ppT.Method("sync___set_value_objInLeftHand", __instance.gameObject, true).GetValue();
-            ppT.Method("sync___set_value_hasObjectInLeftHand", true, true).GetValue();
-        }
-        LogHandState("after normalize");
-
-        Transform playerTransform = cachedRootObject.transform;
-        Vector3 spawnPos = playerTransform.position + playerTransform.forward * 5f;
-        GameObject spawned = UnityEngine.Object.Instantiate(weaponPrefab, spawnPos, Quaternion.identity);
-
-        // This weapon has no parent transform (unlike ItemSpawner.Spawn(), which instantiates
-        // as a child of the spawner). ItemBehaviour.Start()'s idle-bob tween dereferences
-        // transform.parent.up when dispenserStart is false, which NREs with no parent.
-        // Forcing dispenserStart true (same flag DispenserDrop() sets for ejected items)
-        // skips that tween and matches this item's actual "dispensed into the world" state.
         ItemBehaviour spawnedIb = spawned.GetComponent<ItemBehaviour>();
         Weapon spawnedWeapon = spawned.GetComponent<Weapon>();
-        if (spawnedIb != null)
-        {
-            Traverse.Create(spawnedIb).Field("dispenserStart").SetValue(true);
-        }
 
-        FishNet.InstanceFinder.ServerManager.Spawn(spawned);
-
-        Plugin.BepinLogger.LogInfo($"Roulette Item rolled weapon [{randomIndex}]: {weaponPrefab.name}");
-
-        // Step 3a/3b: equip the rolled weapon straight into the roulette's hand, unless it
-        // needs both hands and the other hand is already full (or the roulette is held
-        // left-handed, which has no vanilla both-hands pickup path) — in that case leave it
-        // spawned on the ground, same as the old behavior.
         bool requireBothHands = spawnedWeapon != null && spawnedWeapon.requireBothHands;
         bool otherHandOccupied = rightHand
             ? pp.sync___get_value_hasObjectInLeftHand()
             : ppT.Method("sync___get_value_hasObjectInHand").GetValue<bool>();
-        bool mustGroundSpawn = spawnedIb == null || spawnedWeapon == null
-            || (requireBothHands && (otherHandOccupied || !rightHand));
-        Plugin.BepinLogger.LogInfo(
-            $"[Roulette:before swap] rightHand={rightHand} requireBothHands={requireBothHands} " +
-            $"otherHandOccupied={otherHandOccupied} mustGroundSpawn={mustGroundSpawn}");
-        LogHandState("before swap");
 
-        if (!mustGroundSpawn)
+        // Two-handed weapons have no vanilla left-hand pickup path, so a left-held roulette
+        // rolling one leaves it on the ground — same rule as before.
+        bool useBothHands = requireBothHands && !otherHandOccupied && rightHand;
+        bool canEquip = spawnedIb != null && spawnedWeapon != null && cam != null
+            && (!requireBothHands || useBothHands);
+
+        Transform[] pickupPos = useBothHands
+            ? pp.pickupPositionBothHand
+            : rightHand
+                ? ppT.Field("pickupPositionRightHand").GetValue<Transform[]>()
+                : ppT.Field("pickupPositionLeftHand").GetValue<Transform[]>();
+        int camChildIndex = spawnedIb == null
+            ? -1
+            : (rightHand ? spawnedIb.camChildIndex : spawnedIb.camChildIndexLeftHand);
+        bool indexInRange = pickupPos != null && camChildIndex >= 0 && camChildIndex < pickupPos.Length;
+
+        Grip[] grips = spawned.GetComponentsInChildren<Grip>();
+        Transform gripRightT = grips.Length > 0 ? grips[0].transform : null;
+        Transform gripLeftT = grips.Length > 1 ? grips[1].transform : null;
+
+        string branch = !canEquip || !indexInRange ? "ground" : useBothHands ? "both" : rightHand ? "right" : "left";
+
+        DiagLog.RR(rollId, "equip",
+            $"branch={branch} weapon={spawned.name} requireBothHands={requireBothHands} " +
+            $"otherHandOccupied={otherHandOccupied} camChildIndex={camChildIndex} " +
+            $"pickupPos.Length={(pickupPos == null ? "NULL" : pickupPos.Length.ToString())} " +
+            $"indexInRange={indexInRange} " +
+            $"cam={(cam == null ? "NULL (candidate C3 — assigned in OnStartClient, not Awake)" : "ok")} " +
+            $"gripRight={(gripRightT == null ? "null" : "ok")} gripLeft={(gripLeftT == null ? "null" : "ok")} " +
+            $"camAnimScript={(ppT.Field("camAnimScript").GetValue<CameraShakeConstrains>() == null ? "NULL" : "ok")}");
+
+        // Without a camera nothing below is safe — RightHandDrop() reaches
+        // ItemBehaviour.StickOnGround() and our own OnDropPatch reads tempCam.transform, so
+        // dropping would throw before anything useful happened. Leave the roulette in hand
+        // instead: the player can still drop it by hand, which is a better outcome than an
+        // exception halfway through the swap.
+        if (cam == null)
         {
-            Grip[] grips = spawned.GetComponentsInChildren<Grip>();
-            Transform gripRightT = grips.Length > 0 ? grips[0].transform : null;
-            Transform gripLeftT = grips.Length > 1 ? grips[1].transform : null;
-            // ItemBehaviour.Start() (which hasn't run yet — spawned this same frame) is
-            // normally what assigns gripRight/gripLeft. Vanilla RightHandPickup()/
-            // LeftHandPickup()'s "already holding something" branches re-read
-            // SyncAccessor_objInHand(...).gripRight/gripLeft AFTER SetObjectInHandServer
-            // returns and call SetRightIKTarget/SetLeftIKTarget again themselves — since our
-            // reentrant swap below changes objInHand/objInLeftHand to this new weapon, that
-            // outer vanilla code ends up re-targeting IK at these fields. Leaving them null
-            // until Start() catches up wipes out the correct grip target we set ourselves,
-            // which is exactly why the hand position looks wrong until the item is dropped
-            // and picked back up (or hand-swapped) once Start() has actually run.
-            spawnedIb.gripRight = gripRightT;
-            spawnedIb.gripLeft = gripLeftT;
+            Plugin.BepinLogger.LogError(
+                $"[RR:equip #{rollId}] PlayerPickup.cam is null (candidate C3 — it is assigned in " +
+                "OnStartClient, not Awake); aborting the equip and leaving the roulette in hand.");
+            return;
+        }
 
-            // Weapon.cam gets refreshed every frame from ItemBehaviour.cam via WeaponUpdate(),
-            // so a one-frame delay there self-corrects. Weapon.camAnimScript does NOT — it's
-            // only ever assigned once, by the vanilla OnGrab caller's post-OnGrab continuation
-            // (obj.GetComponent<Weapon>().camAnimScript = camAnimScript). Fire()'s recoil path
-            // (CameraAnimation()/CameraRevolverAnimation()) needs camAnimScript.baseSpeed and
-            // cam.transform, and normal DropObjectObserver logic nulls camAnimScript out on
-            // every drop — if this weapon is transiently dropped anywhere in our reentrant
-            // swap chain before that one-time assignment lands, camAnimScript stays null (or
-            // stale) for the rest of its lifetime, silently skipping recoil without an NRE if
-            // it's non-null-but-wrong, matching "fixed by drop+repickup or hand-swap" exactly
-            // (both re-trigger a fresh assignment). Set both explicitly ourselves so neither
-            // depends on timing we don't control.
-            spawnedWeapon.cam = cam;
-            spawnedWeapon.camAnimScript = ppT.Field("camAnimScript").GetValue<CameraShakeConstrains>();
+        // Take the roulette out of hand first, whichever way this goes — it is about to be
+        // despawned, and leaving it registered as objInHand while its layer changes is the
+        // chain behind crash candidate C2 (RightHandFix force-drops layer 7/9 items).
+        if (rightHand) pp.RightHandDrop(); else pp.LeftHandDrop();
 
-            object rigBuilder = ppT.Field("RigBuilder").GetValue();
+        if (branch == "ground") return;
 
-            if (requireBothHands)
-            {
-                pp.RightHandDrop();
-                LogHandState("both-hands: after RightHandDrop");
-                ppT.Method("sync___set_value_objInHand", spawned, true).GetValue();
-                ppT.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
-                Transform[] bothHandPos = pp.pickupPositionBothHand;
-                ppT.Method("SetObjectInHandServer", spawned,
-                    bothHandPos[spawnedIb.camChildIndex].position,
-                    bothHandPos[spawnedIb.camChildIndex].rotation,
-                    cam.gameObject, true).GetValue();
-                ppT.Method("SetRightIKTarget", gripRightT).GetValue();
-                ppT.Method("SetLeftIKTarget", gripLeftT).GetValue();
-                Traverse.Create(rigBuilder).Method("Build").GetValue();
-                LogHandState("both-hands: after equip");
-            }
-            else if (rightHand)
-            {
-                pp.RightHandDrop();
-                LogHandState("right-hand: after RightHandDrop");
-                ppT.Method("sync___set_value_objInHand", spawned, true).GetValue();
-                ppT.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
-                Transform[] pickupPos = ppT.Field("pickupPositionRightHand").GetValue<Transform[]>();
-                ppT.Method("SetObjectInHandServer", spawned,
-                    pickupPos[spawnedIb.camChildIndex].position,
-                    pickupPos[spawnedIb.camChildIndex].rotation,
-                    cam.gameObject, true).GetValue();
-                ppT.Method("SetRightIKTarget", gripRightT).GetValue();
-                Traverse.Create(rigBuilder).Method("Build").GetValue();
-                LogHandState("right-hand: after equip");
-            }
-            else
-            {
-                pp.LeftHandDrop();
-                LogHandState("left-hand: after LeftHandDrop");
-                ppT.Method("sync___set_value_objInLeftHand", spawned, true).GetValue();
-                ppT.Method("sync___set_value_hasObjectInLeftHand", true, true).GetValue();
-                Transform[] pickupPos = ppT.Field("pickupPositionLeftHand").GetValue<Transform[]>();
-                ppT.Method("SetObjectInHandServer", spawned,
-                    pickupPos[spawnedIb.camChildIndexLeftHand].position,
-                    pickupPos[spawnedIb.camChildIndexLeftHand].rotation,
-                    cam.gameObject, false).GetValue();
-                ppT.Method("SetLeftIKTarget", gripLeftT).GetValue();
-                Traverse.Create(rigBuilder).Method("Build").GetValue();
-                LogHandState("left-hand: after equip");
-            }
+        // ItemBehaviour.Start() is normally what assigns gripRight/gripLeft, and vanilla's
+        // "already holding something" branches re-read them off objInHand after
+        // SetObjectInHandServer returns to re-target IK. Assign them up front so that
+        // re-target lands on the real grips rather than on nulls, which is what used to
+        // leave the hand position wrong until the weapon was dropped and picked back up.
+        spawnedIb.gripRight = gripRightT;
+        spawnedIb.gripLeft = gripLeftT;
 
-            Plugin.BepinLogger.LogInfo(
-                $"[Roulette:equipped weapon state] name={spawned.name} layer={spawned.layer} " +
-                $"inRightHand={spawnedWeapon.inRightHand} inLeftHand={spawnedWeapon.inLeftHand} " +
-                $"cam={(spawnedWeapon.cam == null ? "null" : spawnedWeapon.cam.name)} " +
-                $"camAnimScript={(spawnedWeapon.camAnimScript == null ? "null" : spawnedWeapon.camAnimScript.ToString())}");
+        // Weapon.cam is refreshed every frame by WeaponUpdate(), so a late value self-corrects.
+        // Weapon.camAnimScript does NOT — it is assigned exactly once, by the vanilla post-OnGrab
+        // continuation, and every drop nulls it again. Fire()'s recoil path needs both, and a
+        // stale-but-non-null camAnimScript skips recoil silently instead of throwing. Set them
+        // explicitly rather than depending on timing this mod does not control.
+        spawnedWeapon.cam = cam;
+        spawnedWeapon.camAnimScript = ppT.Field("camAnimScript").GetValue<CameraShakeConstrains>();
+
+        if (useBothHands)
+        {
+            ppT.Method("sync___set_value_objInHand", spawned, true).GetValue();
+            ppT.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
+            ppT.Method("SetObjectInHandServer", spawned,
+                pickupPos[camChildIndex].position,
+                pickupPos[camChildIndex].rotation,
+                cam.gameObject, true).GetValue();
+            ppT.Method("SetRightIKTarget", gripRightT).GetValue();
+            ppT.Method("SetLeftIKTarget", gripLeftT).GetValue();
+        }
+        else if (rightHand)
+        {
+            ppT.Method("sync___set_value_objInHand", spawned, true).GetValue();
+            ppT.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
+            ppT.Method("SetObjectInHandServer", spawned,
+                pickupPos[camChildIndex].position,
+                pickupPos[camChildIndex].rotation,
+                cam.gameObject, true).GetValue();
+            ppT.Method("SetRightIKTarget", gripRightT).GetValue();
         }
         else
         {
-            Plugin.BepinLogger.LogInfo("Roulette Item: rolled weapon left on the ground (2-handed / hands full / left-hand roulette)");
+            ppT.Method("sync___set_value_objInLeftHand", spawned, true).GetValue();
+            ppT.Method("sync___set_value_hasObjectInLeftHand", true, true).GetValue();
+            ppT.Method("SetObjectInHandServer", spawned,
+                pickupPos[camChildIndex].position,
+                pickupPos[camChildIndex].rotation,
+                cam.gameObject, false).GetValue();
+            ppT.Method("SetLeftIKTarget", gripLeftT).GetValue();
         }
-        LogHandState("after swap block");
 
-        // Step 2b (last) + 4: force the roulette's own out-of-ammo despawn. We don't call the
-        // real Gun.Fire() here — this Roulette Item is bound to a real Gun component via the
-        // assetbundle stub, but (per RouletteGunUpdatePatch's own comment) none of its private
-        // fields like `audio` get wired up like a normal spawned weapon, so Fire() NREs
-        // immediately (audio.PlayOneShot(...) on a null AudioSource), which aborted this whole
-        // Postfix before it ever reached StartCoroutine below — that's why nothing despawned.
-        // The drop itself already happened above (hand-swap branches call RightHandDrop/
-        // LeftHandDrop directly); all that's actually needed here is the ammo bookkeeping and
-        // the deferred despawn.
-        rouletteGun.sync___set_value_currentAmmo(-1, true);
-        LogHandState("end");
+        Traverse.Create(ppT.Field("RigBuilder").GetValue()).Method("Build").GetValue();
 
-        __instance.StartCoroutine(DelayedRouletteDespawn(__instance, rouletteGun));
+        DiagLog.RR(rollId, "equipped",
+            $"objInHand={DiagLog.Describe(pp.sync___get_value_objInHand())} " +
+            $"objInLeftHand={DiagLog.Describe(pp.sync___get_value_objInLeftHand())} " +
+            $"layer={spawned.layer} inRightHand={spawnedWeapon.inRightHand} inLeftHand={spawnedWeapon.inLeftHand} " +
+            $"cam={(spawnedWeapon.cam == null ? "null" : spawnedWeapon.cam.name)} " +
+            $"camAnimScript={(spawnedWeapon.camAnimScript == null ? "null" : "ok")}");
+    }
+
+    /// <summary>
+    /// Retires the Roulette Item through vanilla's own despawn. Called on the owner client,
+    /// which is allowed to: PlayerPickup.HandleInteraction transfers ownership of anything
+    /// picked up via the GiveOwnerToObj ServerRpc, and Weapon's DespawnObjectServer only
+    /// requires IsClient anyway.
+    /// </summary>
+    public static void DespawnRoulette(int rollId, ItemBehaviour rouletteIb)
+    {
+        if (rouletteIb == null) return;
+        Gun rouletteGun = rouletteIb.GetComponent<Gun>();
+        if (rouletteGun == null)
+        {
+            Plugin.BepinLogger.LogError($"[RR:despawn #{rollId}] Roulette Item has no Gun component");
+            return;
+        }
+
+        DiagLog.RR(rollId, "despawn", $"scheduled layer={rouletteIb.gameObject.layer}");
+        rouletteIb.StartCoroutine(DelayedRouletteDespawn(rollId, rouletteIb, rouletteGun));
     }
 
     // The vanilla caller of OnGrab (PlayerPickup's SetObjectInHandObserver RPC logic)
@@ -404,7 +624,7 @@ public class GrabPatches
     // happens in this postfix. Weapon.DespawnObject() refuses to despawn while layer is 8
     // or 9, so scheduling the despawn inline here would silently no-op forever. Deferring
     // by one frame lets that caller finish first before we force the layer back down.
-    static System.Collections.IEnumerator DelayedRouletteDespawn(ItemBehaviour rouletteIb, Gun rouletteGun)
+    static System.Collections.IEnumerator DelayedRouletteDespawn(int rollId, ItemBehaviour rouletteIb, Gun rouletteGun)
     {
         yield return null;
         if (rouletteIb == null || rouletteGun == null) yield break;
@@ -412,9 +632,23 @@ public class GrabPatches
         rouletteIb.UnsetLayer();
         yield return new WaitForSeconds(0.65f);
         if (rouletteGun == null) yield break;
+
+        // Vanilla DespawnObject() plays the depop effect and then calls its own
+        // DespawnObjectServer ServerRpc, which is what actually removes it on every peer.
         Traverse.Create(rouletteGun).Method("DespawnObject").GetValue();
+        DiagLog.RR(rollId, "despawn", "executed");
     }
 }
+
+// Steps 2 and 3 of the roll (host spawns it, requester equips it) live in
+// Utils/RouletteNet.cs, because they travel over Mycelium rather than over a game RPC.
+//
+// They were originally written against vanilla's PlayerSpawnObject.SpawnObject ServerRpc,
+// which is exactly the right shape — client picks a prefab, server spawns it and answers the
+// caller. A runtime probe then showed PlayerSpawnObject is not actually a component on the
+// player prefab, and a client may only invoke a ServerRpc on a NetworkObject it owns, so that
+// route is unreachable no matter how well it fits. RouletteNet's class comment records the
+// full search and the one pure-vanilla alternative still open.
 
 
 [HarmonyPatch(typeof(ItemBehaviour), "OnDrop")]
@@ -445,6 +679,31 @@ public class OnDropPatch
 [HarmonyPatch(typeof(ItemBehaviour), "Start")]
 public class StartPatches
 {
+    // Crash candidate C1. Vanilla Start() ends with
+    //     if (!dispenserStart && gameObject.name != "Pig Held Item")
+    //         groundMov = transform.DOLocalMove(transform.localPosition + transform.parent.up / 2f, ...)
+    // so transform.parent.up throws for any item with no parent while dispenserStart is
+    // false. ItemSpawner.Spawn() parents its instance to the spawner on the server, but the
+    // copies FishNet spawns on clients — and anything spawned by PlayerSpawnObject, which is
+    // now how rolled weapons arrive — have no parent at all.
+    //
+    // This replaces a write the mod used to do on the single instance it created itself, and
+    // is strictly better for it: parentless is exactly the condition the idle-bob tween
+    // cannot handle, and unlike the old write this also runs on clients, where the old
+    // server-side one never did.
+    static void Prefix(ItemBehaviour __instance)
+    {
+        if (__instance.transform.parent != null) return;
+
+        Traverse dispenserStart = Traverse.Create(__instance).Field("dispenserStart");
+        if (dispenserStart.GetValue<bool>()) return;
+
+        dispenserStart.SetValue(true);
+        DiagLog.Log("ItemBehaviour.Start",
+            $"forced dispenserStart=true on parentless '{__instance.weaponName}' " +
+            $"({__instance.gameObject.name}) — vanilla Start would have NREd on transform.parent.up");
+    }
+
     static void Postfix(ItemBehaviour __instance)
     {
         // if (__instance.weaponName != "Roulette Item")
@@ -552,16 +811,21 @@ public class PlayerPickupAwakePatch
         // that is plausible or negligible. See also the A2 note in RouletteState.Reset.
         if (DiagnosticFlags.SkipRouletteResetOnAwake)
         {
-            DiagLog.Log("PlayerPickup.Awake", "RouletteState.Reset() SKIPPED via DiagnosticFlags");
+            DiagLog.Log("PlayerPickup.Awake", "RouletteState init SKIPPED via DiagnosticFlags");
             return;
         }
 
+        // EnsureInitialized, NOT Reset. PlayerManager respawns every player object every
+        // round, so Awake() fires fresh each round — calling Reset() here wiped the pool
+        // mid-match, repeatedly, which is why a roll never had more than the one starter
+        // weapon to pick between.
         Stopwatch sw = Stopwatch.StartNew();
-        RouletteState.Reset();
+        RouletteState.EnsureInitialized();
         sw.Stop();
 
         DiagLog.Log("PlayerPickup.Awake",
-            $"RouletteState.Reset() took {sw.Elapsed.TotalMilliseconds:F2}ms " +
+            $"RouletteState.EnsureInitialized() took {sw.Elapsed.TotalMilliseconds:F2}ms " +
+            $"obtained={RouletteState.obtained_Items.Count} " +
             $"obj={__instance.gameObject.name} {DiagLog.NetRoles()}");
     }
 }
@@ -571,23 +835,35 @@ public class PlayerPickupUpdatePatch
 {
     static bool Prefix(PlayerPickup __instance)
     {
-        if (Input.GetKeyDown(KeyCode.O))
+        // These debug keys are gated on IsOwner because this prefix runs once per
+        // PlayerPickup instance per frame — without the gate a single P press granted one
+        // weapon per player in the match, and O reset the pool that many times over.
+        if (__instance.IsOwner)
         {
-            RouletteState.Reset();
-            Plugin.BepinLogger.LogInfo($"Reset roulette item lists. unowned_items: {RouletteState.unowned_items.Count}, obtained_Items: {RouletteState.obtained_Items.Count}");
-        }
+            PendingRoll.CheckTimeout();
 
-        if (Input.GetKeyDown(KeyCode.P) && RouletteState.unowned_items.Count > 0)
-        {
-            int randomIndex = UnityEngine.Random.Range(0, RouletteState.unowned_items.Count);
-            GameObject randomItem = RouletteState.unowned_items[randomIndex];
-            RouletteState.unowned_items.RemoveAt(randomIndex);
-            RouletteState.obtained_Items.Add(randomItem);
-            Plugin.BepinLogger.LogInfo($"Added random item {randomItem.name} to obtained_Items. Remaining unowned_items: {RouletteState.unowned_items.Count}");
+            if (Input.GetKeyDown(KeyCode.O))
+            {
+                RouletteState.Reset();
+                Plugin.BepinLogger.LogInfo($"Reset roulette item lists. unowned_items: {RouletteState.unowned_items.Count}, obtained_Items: {RouletteState.obtained_Items.Count}");
+            }
 
-            string obtainedList = string.Join(Environment.NewLine,
-                RouletteState.obtained_Items.Select((item, i) => $"  [{i}] {(item == null ? "null" : item.name)}"));
-            Plugin.BepinLogger.LogInfo($"obtained_Items ({RouletteState.obtained_Items.Count} total):{Environment.NewLine}{obtainedList}");
+            if (Input.GetKeyDown(KeyCode.P) && RouletteState.unowned_items.Count > 0)
+            {
+                int randomIndex = UnityEngine.Random.Range(0, RouletteState.unowned_items.Count);
+                GameObject randomItem = RouletteState.unowned_items[randomIndex];
+                if (RouletteState.Grant(randomItem))
+                {
+                    Plugin.BepinLogger.LogInfo($"Added random item {randomItem.name} to obtained_Items. Remaining unowned_items: {RouletteState.unowned_items.Count}");
+                }
+            }
+
+            // Proves the "every obtained weapon has an equal chance" requirement as a number
+            // in the log rather than as a claim about the code.
+            if (Input.GetKeyDown(KeyCode.K))
+            {
+                RouletteState.SelfTest(100000);
+            }
         }
 
         Traverse t = Traverse.Create(__instance);
@@ -767,70 +1043,13 @@ public class RightHandPickupPatch
     }
 }
 
-// Unlike RightHandPickup() (which re-reads SyncAccessor_objInHand for its post-pickup
-// SetRightIKTarget call, so it correctly sees whatever GrabPatches.Postfix swapped objInHand
-// to while nested inside SetObjectInHandServer/OnGrab), vanilla LeftHandPickup() re-parents
-// and re-targets IK using the raw raycast-hit GameObject captured at the top of the method —
-// a closure-captured local, never re-read. So when the Roulette Item is picked up left-handed
-// and GrabPatches.Postfix reentrantly swaps objInLeftHand to the newly rolled weapon partway
-// through OnGrab, vanilla LeftHandPickup() unconditionally stomps that back to the (soon to be
-// despawned) Roulette Item reference right after SetObjectInHandServer returns — leaving
-// objInLeftHand pointing at a destroyed object and the right hand's IK/position corrupted as a
-// side effect. This patch replaces the whole method for the Roulette Item specifically, using
-// RightHandPickup()'s safer pattern instead: set the sync vars BEFORE calling
-// SetObjectInHandServer, and re-read SyncAccessor_objInLeftHand afterward instead of the stale
-// local, so our swap survives.
-[HarmonyPatch(typeof(PlayerPickup), "LeftHandPickup")]
-public class LeftHandPickupPatch
-{
-    static bool Prefix(PlayerPickup __instance)
-    {
-        Traverse t = Traverse.Create(__instance);
-        Camera cam = t.Field("cam").GetValue<Camera>();
-        float interactionDistance = t.Field("interactionDistance").GetValue<float>();
-        LayerMask interactionLayer = t.Field("interactionLayer").GetValue<LayerMask>();
-        float sphereRadius = t.Field("sphereRadius").GetValue<float>();
-        float currentHitDistance = t.Field("currentHitDistance").GetValue<float>();
-
-        GameObject hitObj = null;
-        RaycastHit hit, hit2;
-        if (Physics.Raycast(cam.transform.position, cam.transform.forward, out hit, interactionDistance, interactionLayer))
-            hitObj = hit.transform.gameObject;
-        else if (Physics.SphereCast(cam.transform.position, sphereRadius, cam.transform.forward, out hit2, currentHitDistance, interactionLayer))
-            hitObj = hit2.transform.gameObject;
-
-        if (hitObj == null) return true;
-        ItemBehaviour ib = hitObj.GetComponent<ItemBehaviour>();
-        if (ib?.weaponName != "Roulette Item") return true;
-
-        Plugin.BepinLogger.LogInfo("[Roulette] LeftHandPickupPatch intercepted left-hand pickup of Roulette Item");
-
-        if (__instance.sync___get_value_hasObjectInLeftHand())
-        {
-            __instance.LeftHandDrop();
-        }
-        SoundManager.Instance.PlaySound(t.Field("pickupClip").GetValue<AudioClip>());
-        t.Method("sync___set_value_objInLeftHand", hitObj, true).GetValue();
-        t.Method("sync___set_value_hasObjectInLeftHand", true, true).GetValue();
-        Transform[] pickupPos = t.Field("pickupPositionLeftHand").GetValue<Transform[]>();
-        t.Method("SetObjectInHandServer", hitObj,
-            pickupPos[ib.camChildIndexLeftHand].position,
-            pickupPos[ib.camChildIndexLeftHand].rotation,
-            cam.gameObject, false).GetValue();
-
-        GameObject currentLeft = __instance.sync___get_value_objInLeftHand();
-        Plugin.BepinLogger.LogInfo(
-            $"[Roulette] LeftHandPickupPatch: after SetObjectInHandServer, objInLeftHand={(currentLeft == null ? "null" : currentLeft.name)}");
-        if (currentLeft != null)
-        {
-            t.Method("SetLeftIKTarget", currentLeft.GetComponent<ItemBehaviour>().gripLeft).GetValue();
-        }
-        object rigBuilder = t.Field("RigBuilder").GetValue();
-        Traverse.Create(rigBuilder).Method("Build").GetValue();
-
-        return false;
-    }
-}
+// LeftHandPickupPatch used to live here: a full-method overwrite of vanilla
+// PlayerPickup.LeftHandPickup(), needed only because the old roll ran REENTRANTLY inside
+// OnGrab and swapped objInLeftHand out from under vanilla, which then stomped it back using
+// a stale raycast-hit local. The roll is now a network round trip, so vanilla's pickup has
+// completed long before anything is swapped and there is nothing left to defend against —
+// and StraftatModAttribute.Documentation warns against exactly this kind of overwrite
+// prefix. Removed rather than left in place.
 
 //unused, initally used for testing the roulette item spawn on the player pickup script. This is now handled by the item spawner script.
 /*
@@ -958,41 +1177,44 @@ Plan for choosing random item
 
 /*
 ================================================================================
-TODO (deferred): make the roulette pool PER-PLAYER instead of one global list.
+DONE: the roulette pool is now per-player, and it never leaves the machine it
+belongs to.
 ================================================================================
-Currently every player rolls from the HOST's pool. Three separate problems:
+Each peer keeps exactly one pool — the local player's (RouletteState). The roll
+happens on the peer that owns the grabbing player, and the only thing that
+crosses the wire is the single chosen prefab. No peer is ever told what another
+peer has unlocked, which is a deliberate design constraint, not an oversight.
 
-1. RouletteState is a single global `static` pair of lists, and the roll in
-   GrabPatches.Postfix is gated behind `if (!InstanceFinder.IsServer) return;`.
-   So only the server ever rolls, always out of that one shared list.
-   It should roll from the pool belonging to whoever picked the item up, i.e.
-   key the state per NetworkConnection (`pp.Owner`) rather than globally.
-   Note GrabPatches.Postfix currently resolves `pp` AFTER the roll — that line
-   has to move above the roll before `pp.Owner` can be used for it.
+This is done entirely with the game's own RPCs. Two facts made that possible,
+both established by disassembling Assembly-CSharp/FishNet.Runtime:
 
-2. RouletteState.Reset() is called from PlayerPickupAwakePatch, i.e. on EVERY
-   PlayerPickup.Awake(). PlayerManager respawns a brand-new player object every
-   round for every player, so Awake() fires fresh each round and the pool gets
-   wiped mid-match, repeatedly.
+1. PlayerSpawnObject (a NetworkBehaviour on the player, owner-only — its
+   OnStartClient disables itself when !IsOwner) already has the exact round trip
+   needed:
+       SpawnObject(GameObject obj, Transform player, PlayerSpawnObject script)
+   is a ServerRpc; its server body Instantiates, ServerManager.Spawns, and then
+   answers every peer with the SetSpawnedObject observers RPC — so the caller
+   learns what it got.
 
-3. The starter item is `unowned_items[30]` — an unguarded hardcoded index whose
-   meaning depends entirely on Resources.LoadAll ordering, which Unity does not
-   guarantee. It also throws outright if the list has 31 items or fewer (see
-   the A2 candidate in the crash investigation — a throw in an Awake prefix
-   skips FishNet's NetworkInitialize___Early() and never registers that
-   behaviour's SyncVars). SpawnerManager.NameToWeaponDict is the safe lookup,
-   and is also the natural seam for the eventual Archipelago hook
-   (something like GrantByName(conn, weaponName)).
+2. FishNet serializes an UNSPAWNED prefab. Writer.WriteNetworkObject is
+       if (nob.IsSpawned) WriteNetworkObjectId(nob.ObjectId)
+       else { WriteNetworkObjectId(nob.PrefabId);
+              WriteUInt16(nob.SpawnableCollectionId);
+              WriteSByte(nob.GetInitializeOrder()); }
+   so a weapon PREFAB can be handed to the server by reference and resolved
+   there through the spawnable-prefab table.
 
-Implementation note for whoever picks this up: this mod is built externally with
-plain `dotnet build` and therefore never runs FishNet's codegen weaver, so new
-[ServerRpc]/[ObserversRpc] methods are NOT available to us. The runtime
-Broadcast API does work: ClientManager.Broadcast<T> / ServerManager
-.RegisterBroadcast<T> where T : struct, IBroadcast. The catch is that the weaver
-is also what normally auto-registers each type's serializer delegates, so for
-any struct we define ourselves we must assign
-FishNet.Serializing.GenericWriter<T>.Write and GenericReader<T>.Read manually at
-startup (they're public-settable statics) or the broadcast silently no-ops.
-Worth a small send/receive smoke test before building anything on top of it.
+That removed the need for the custom FishNet Broadcast layer this comment used
+to describe (this mod builds without the codegen weaver, so new [ServerRpc]s are
+unavailable and GenericWriter<T>.Write / GenericReader<T>.Read would have had to
+be assigned by hand), and the need for the Mycelium RPC library as well.
+
+The one consequence worth remembering: because the prefab travels as a
+POSITIONAL PrefabId, peers whose SpawnablePrefabs tables disagree will resolve
+different weapons. ItemSpawnerStartPatch mutates that table at runtime, so it
+must only ever append. That is crash-investigation candidate A1, and it is now
+load-bearing for the roll itself, not just for the roulette item's own spawn.
+Both sides log prefabId ([RR:roll] on the client, [RR:server-spawn] on the host)
+precisely so the two can be diffed.
 ================================================================================
 */
