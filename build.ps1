@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 $SourceBundles = "C:\Users\finne\Documents\Roulette_Item_2\AssetBundles\StandaloneWindows"
 $DestBundles = "AssetBundles"
 $BuildOutputDir = "bin\Release\Straftapelago.Finnegan_McD.org"
-$PluginsDir = "..\BepInEx\plugins"
+$PluginsDir = "..\BepInEx\plugins\Straftipelago"
 
 if ((Test-Path $SourceBundles) -and (Get-ChildItem $SourceBundles -Force | Select-Object -First 1)) {
     Write-Host "Moving asset bundles into $DestBundles..."
@@ -32,6 +32,15 @@ if (Test-Path $ManagedDir) {
     Get-ChildItem $ManagedDir -Filter *.dll -Force | ForEach-Object { $gameAssemblies[$_.Name] = $true }
 } else {
     Write-Warning "Managed dir not found at $ManagedDir - skipping the game-assembly guard."
+}
+
+# $PluginsDir is a subfolder of BepInEx/plugins, which will not exist on a fresh
+# clone or a clean BepInEx install - Move-Item would fail on the very first file.
+# Create it up front. BepInEx scans plugins recursively, so the subfolder is only
+# for tidiness and does not change how the mod loads.
+if (-not (Test-Path $PluginsDir)) {
+    Write-Host "Creating $PluginsDir..."
+    New-Item -ItemType Directory -Path $PluginsDir -Force | Out-Null
 }
 
 Write-Host "Deploying $BuildOutputDir to $PluginsDir..."
