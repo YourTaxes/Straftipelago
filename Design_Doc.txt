@@ -1,5 +1,6 @@
 Archipelago straft 
-Goal, kill with every weapon
+Main Goal, win a specific amount of takes.
+Secondary Goal, kill with set percentage of weapons
 Checks: kill with each weapon
 Item: ability to use each weapon 
 Deathlink will be enabled as an option
