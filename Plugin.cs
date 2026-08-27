@@ -28,7 +28,6 @@ public class Plugin : BaseUnityPlugin
     public const string PluginVersion = "1.0.0";
 
     public const string ModDisplayInfo = $"{PluginName} v{PluginVersion}";
-    private const string APDisplayInfo = $"Archipelago v{ArchipelagoClient.APVersion}";
     public static ManualLogSource BepinLogger;
     public static ArchipelagoClient ArchipelagoClient;
     public static GameObject RouletteItemPrefab;
@@ -125,6 +124,10 @@ public class Plugin : BaseUnityPlugin
             
             new Harmony(PluginGUID).PatchAll();
 
+            // Must be a GameObject we own; this plugin component is destroyed on
+            // frame 0 along with BepInEx_Manager. See ArchipelagoOverlay.
+            ArchipelagoOverlay.Install();
+
             ArchipelagoConsole.LogMessage($"{ModDisplayInfo} loaded!");
         }
         catch (Exception e)
@@ -136,49 +139,20 @@ public class Plugin : BaseUnityPlugin
 
 
 
-    private void OnGUI()
+    // This component does NOT draw the overlay - see ArchipelagoOverlay for why.
+    // In short: BepInEx's entrypoint (Application..cctor) runs before the first
+    // scene loads, and Unity resets the DontDestroyOnLoad scene when it does, so
+    // BepInEx_Manager and every plugin component on it are destroyed on frame 0.
+    // An OnGUI here would never be called even once. Harmony patches and static
+    // state are unaffected, which is why the rest of the mod works regardless.
+    //
+    // Kept as a one-line breadcrumb: if a future BepInEx or Unity version stops
+    // doing this, the absence of this line in the log makes that visible instead
+    // of leaving a stale workaround silently in place.
+    private void OnDestroy()
     {
-        BepinLogger.LogInfo("mod Gui");
-        // show the mod is currently loaded in the corner
-        GUI.Label(new Rect(16, 16, 300, 20), ModDisplayInfo);
-        ArchipelagoConsole.OnGUI();
-
-        string statusMessage;
-        // show the Archipelago Version and whether we're connected or not
-        if (ArchipelagoClient.Authenticated)
-        {
-            // if your game doesn't usually show the cursor this line may be necessary
-            // Cursor.visible = false;
-
-            statusMessage = " Status: Connected";
-            GUI.Label(new Rect(16, 50, 300, 20), APDisplayInfo + statusMessage);
-        }
-        else
-        {
-            // if your game doesn't usually show the cursor this line may be necessary
-            // Cursor.visible = true;
-
-            statusMessage = " Status: Disconnected";
-            GUI.Label(new Rect(16, 50, 300, 20), APDisplayInfo + statusMessage);
-            GUI.Label(new Rect(16, 70, 150, 20), "Host: ");
-            GUI.Label(new Rect(16, 90, 150, 20), "Player Name: ");
-            GUI.Label(new Rect(16, 110, 150, 20), "Password: ");
-
-            ArchipelagoClient.ServerData.Uri = GUI.TextField(new Rect(150, 70, 150, 20),
-                ArchipelagoClient.ServerData.Uri);
-            ArchipelagoClient.ServerData.SlotName = GUI.TextField(new Rect(150, 90, 150, 20),
-                ArchipelagoClient.ServerData.SlotName);
-            ArchipelagoClient.ServerData.Password = GUI.TextField(new Rect(150, 110, 150, 20),
-                ArchipelagoClient.ServerData.Password);
-
-            // requires that the player at least puts *something* in the slot name
-            if (GUI.Button(new Rect(16, 130, 100, 20), "Connect") &&
-                !ArchipelagoClient.ServerData.SlotName.IsNullOrWhiteSpace())
-            {
-                ArchipelagoClient.Connect();
-            }
-        }
-        // this is a good place to create and add a bunch of debug buttons
+        Logger.LogInfo($"[Diag:Host] BepInEx_Manager component destroyed on frame {Time.frameCount} " +
+            "(expected in this game; the overlay lives on its own GameObject).");
     }
 
 

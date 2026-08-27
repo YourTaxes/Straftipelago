@@ -20,7 +20,37 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet build failed with exit code $LASTEXITCODE"
 }
 
-Write-Host "Moving contents of $BuildOutputDir to $PluginsDir..."
-Get-ChildItem $BuildOutputDir -Force | Move-Item -Destination $PluginsDir -Force
+# Safety net. The csproj marks the game's assemblies Private=false so they should never
+# reach the build output, but if that ever regresses, copying them into BepInEx/plugins
+# makes BepInEx load a second copy of Assembly-CSharp (etc.) next to the real one — two
+# distinct PlayerPickup/ItemBehaviour types, Harmony patching the set the game doesn't use,
+# and very confusing breakage. Anything the game already ships in its Managed folder is
+# refused here rather than deployed.
+$ManagedDir = "..\STRAFTAT_Data\Managed"
+$gameAssemblies = @{}
+if (Test-Path $ManagedDir) {
+    Get-ChildItem $ManagedDir -Filter *.dll -Force | ForEach-Object { $gameAssemblies[$_.Name] = $true }
+} else {
+    Write-Warning "Managed dir not found at $ManagedDir - skipping the game-assembly guard."
+}
+
+Write-Host "Deploying $BuildOutputDir to $PluginsDir..."
+$deployed = 0
+$skipped = @()
+foreach ($item in Get-ChildItem $BuildOutputDir -Force) {
+    if ($gameAssemblies.ContainsKey($item.Name)) {
+        $skipped += $item.Name
+        Remove-Item $item.FullName -Force
+        continue
+    }
+    Move-Item $item.FullName -Destination $PluginsDir -Force
+    $deployed++
+}
+
+Write-Host "Deployed $deployed file(s)."
+if ($skipped.Count -gt 0) {
+    Write-Warning ("Refused to deploy {0} game-provided assembly/assemblies (the game already has these in Managed): {1}" -f $skipped.Count, ($skipped -join ", "))
+    Write-Warning "Check that the <Reference> items in the csproj still have Private=`"false`"."
+}
 
 Write-Host "Done."
