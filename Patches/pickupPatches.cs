@@ -490,9 +490,15 @@ public class GrabPatches
             ? pp.sync___get_value_hasObjectInLeftHand()
             : ppT.Method("sync___get_value_hasObjectInHand").GetValue<bool>();
 
-        // Two-handed weapons have no vanilla left-hand pickup path, so a left-held roulette
-        // rolling one leaves it on the ground — same rule as before.
-        bool useBothHands = requireBothHands && !otherHandOccupied && rightHand;
+        // Off: two-handed weapons have no vanilla left-hand pickup path, so a left-held
+        // roulette rolling one - or a right-held one with the left hand full - leaves the
+        // weapon on the ground. On: the roll behaves like a vanilla two-handed pickup off the
+        // floor, which never refuses. HandleInteraction's rule for that case is
+        // "RightHandDrop(); LeftHandDrop(); RightHandPickup();" - both hands are emptied and
+        // the weapon is taken in both, whichever hand the player was holding things in - so
+        // the both-hand branch is taken unconditionally and the drops below match it.
+        bool overrideTwoHanded = ArchipelagoMenu.RolledTwoHandedWeaponsOverride.Value;
+        bool useBothHands = requireBothHands && (overrideTwoHanded || (!otherHandOccupied && rightHand));
         bool canEquip = spawnedIb != null && spawnedWeapon != null && cam != null
             && (!requireBothHands || useBothHands);
 
@@ -501,9 +507,12 @@ public class GrabPatches
             : rightHand
                 ? ppT.Field("pickupPositionRightHand").GetValue<Transform[]>()
                 : ppT.Field("pickupPositionLeftHand").GetValue<Transform[]>();
+        // pickupPositionBothHand is indexed by camChildIndex in every vanilla caller, never by
+        // camChildIndexLeftHand - which matters now that the both-hand branch is reachable
+        // from a left-held roulette.
         int camChildIndex = spawnedIb == null
             ? -1
-            : (rightHand ? spawnedIb.camChildIndex : spawnedIb.camChildIndexLeftHand);
+            : (useBothHands || rightHand ? spawnedIb.camChildIndex : spawnedIb.camChildIndexLeftHand);
         bool indexInRange = pickupPos != null && camChildIndex >= 0 && camChildIndex < pickupPos.Length;
 
         Grip[] grips = spawned.GetComponentsInChildren<Grip>();
@@ -514,6 +523,7 @@ public class GrabPatches
 
         DiagLog.RR(rollId, "equip",
             $"branch={branch} weapon={spawned.name} requireBothHands={requireBothHands} " +
+            $"overrideTwoHanded={overrideTwoHanded} " +
             $"otherHandOccupied={otherHandOccupied} camChildIndex={camChildIndex} " +
             $"pickupPos.Length={(pickupPos == null ? "NULL" : pickupPos.Length.ToString())} " +
             $"indexInRange={indexInRange} " +
@@ -537,7 +547,19 @@ public class GrabPatches
         // Take the roulette out of hand first, whichever way this goes — it is about to be
         // despawned, and leaving it registered as objInHand while its layer changes is the
         // chain behind crash candidate C2 (RightHandFix force-drops layer 7/9 items).
-        if (rightHand) pp.RightHandDrop(); else pp.LeftHandDrop();
+        if (useBothHands && otherHandOccupied)
+        {
+            // The weapon is about to occupy both hands, so the hand that is not holding the
+            // roulette has to be emptied too — vanilla does the same before a two-handed
+            // pickup. LEFT FIRST, unlike vanilla's order: RightHandDrop() ends by calling
+            // SwitchWeapons() when the left hand still holds something and there is no
+            // currentInteractable, which moves that item into the right hand instead of
+            // dropping it. Vanilla never sees that because a floor pickup always has a
+            // currentInteractable; a roll has none, so the right hand is emptied last.
+            pp.LeftHandDrop();
+            pp.RightHandDrop();
+        }
+        else if (rightHand) pp.RightHandDrop(); else pp.LeftHandDrop();
 
         if (branch == "ground") return;
 

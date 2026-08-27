@@ -23,11 +23,18 @@ namespace Straftapelago.Finnegan_McD.org;
 // Mycelium carries the roulette roll from the player who made it to the host. It is required,
 // not optional: without it a picked-up Roulette Item rolls a weapon and then has no way to ask
 // the server to spawn it. See RouletteNet for why the game's own RPCs cannot do this.
+//
+// Mod Menu is required for the same kind of reason: it hosts this mod's only login UI (see
+// ArchipelagoMenu, which replaced the IMGUI connect form), so without it there is no way to
+// reach an Archipelago room at all. A hard dependency makes that a single explanatory line in
+// the chainloader log rather than a mod that loads and then silently cannot connect.
 [BepInDependency(MyceliumDependencyGUID)]
+[BepInDependency(ModMenuDependencyGUID)]
 [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
 public class Plugin : BaseUnityPlugin
 {
     public const string MyceliumDependencyGUID = "RugbugRedfern.MyceliumNetworking";
+    public const string ModMenuDependencyGUID = "kestrel.straftat.modmenu";
 
     public const string PluginGUID = "org.Finnegan_McD.Straftapelago";
     public const string PluginName = "Straftapelago.Finnegan_McD.org";
@@ -87,6 +94,19 @@ public class Plugin : BaseUnityPlugin
             // Plugin startup logic
             BepinLogger = Logger;
             BepinLogger.LogInfo("Mod Started - this is the print statement");
+
+            // First thing after the logger: this binds the config, which creates/updates
+            // BepInEx/config/org.Finnegan_McD.Straftapelago.cfg, and every later step here
+            // (and every patch) may read an entry, so nothing may run before it. Once only:
+            // Mod Menu's RegisterContentBuilder throws on a second call from this assembly.
+            try
+            {
+                ArchipelagoMenu.Install(Config);
+            }
+            catch (Exception e)
+            {
+                BepinLogger.LogError($"Failed to register the Mod Menu page: {e}");
+            }
 
             using (Stream stream = typeof(Plugin).Assembly.GetManifestResourceStream(
                 "Straftapelago.Finnegan_McD.org.AssetBundles.roulette_item"))

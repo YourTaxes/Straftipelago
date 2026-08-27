@@ -1,152 +1,95 @@
-﻿using System.Collections.Generic;
-using System.Linq;
+using System;
+using System.Collections.Generic;
 using BepInEx;
-using Straftapelago.Finnegan_McD.org.Archipelago;
-using UnityEngine;
 
 namespace Straftapelago.Finnegan_McD.org.Utils;
 
-// shamelessly stolen from oc2-modding https://github.com/toasterparty/oc2-modding/blob/main/OC2Modding/GameLog.cs
+/// <summary>
+/// Where every Archipelago-facing message goes. Each one is written to the BepInEx log and
+/// to the game's killfeed.
+/// </summary>
+/// <remarks>
+/// <para>This used to be an IMGUI window (a scrolling terminal drawn by
+/// <see cref="ArchipelagoOverlay"/>, adapted from oc2-modding's GameLog) plus a text field
+/// for sending server commands. The terminal now goes to the killfeed instead, so none of
+/// that drawing survives; <see cref="LogMessage"/> keeps its signature, which is what the
+/// rest of the mod calls.</para>
+/// <para><b>Why the queue.</b> Messages arrive on threads that are not Unity's: the
+/// Archipelago client's MessageLog callback fires on its websocket thread, and
+/// <c>HandleConnectResult</c> runs on a ThreadPool thread. Writing a killfeed line
+/// Instantiates a prefab, and every Unity API involved is main-thread-only, so the write
+/// cannot happen where the message is produced. Messages are queued here and drained by
+/// <see cref="Pump"/> from the overlay's Update instead.</para>
+/// </remarks>
 public static class ArchipelagoConsole
 {
-    public static bool Hidden = true;
+    /// <summary>
+    /// Held rather than dropped when the killfeed is not up yet, so that messages produced
+    /// in a menu are not lost. Capped so a long disconnected session cannot grow unbounded;
+    /// the BepInEx log has the complete record either way.
+    /// </summary>
+    private const int MaxPending = 80;
 
-    private static List<string> logLines = new();
-    private static Vector2 scrollView;
-    private static Rect window;
-    private static Rect scroll;
-    private static Rect text;
-    private static Rect hideShowButton;
+    /// <summary>
+    /// Killfeed lines fade on their own timer, so a backlog released all at once would push
+    /// itself off the screen. Trickle it instead.
+    /// </summary>
+    private const int MaxPerFrame = 3;
 
-    private static GUIStyle textStyle = new();
-    private static string scrollText = "";
-    private static float lastUpdateTime = Time.time;
-    private const int MaxLogLines = 80;
-    private const float HideTimeout = 15f;
+    private static readonly Queue<string> Pending = new();
 
-    private static string CommandText = "!help";
-    private static Rect CommandTextRect;
-    private static Rect SendCommandButton;
-
+    /// <summary>Kept for the call in <see cref="Plugin.Awake"/>; there is nothing to set up.</summary>
     public static void Awake()
     {
-        UpdateWindow();
     }
 
     public static void LogMessage(string message)
     {
         if (message.IsNullOrWhiteSpace()) return;
 
-        if (logLines.Count == MaxLogLines)
-        {
-            logLines.RemoveAt(0);
-        }
-        logLines.Add(message);
+        // Unconditional, and first: this is the record that survives whether or not the
+        // killfeed ever comes up, and it is safe from any thread.
         Plugin.BepinLogger.LogMessage(message);
-        lastUpdateTime = Time.time;
-        UpdateWindow();
-    }
 
-    public static void OnGUI()
-    {
-        if (logLines.Count == 0) return;
-
-        if (!Hidden || Time.time - lastUpdateTime < HideTimeout)
+        lock (Pending)
         {
-            scrollView = GUI.BeginScrollView(window, scrollView, scroll);
-            GUI.Box(text, "");
-            GUI.Box(text, scrollText, textStyle);
-            GUI.EndScrollView();
-        }
-
-        if (GUI.Button(hideShowButton, Hidden ? "Show" : "Hide"))
-        {
-            Hidden = !Hidden;
-            UpdateWindow();
-        }
-        
-        // draw client/server commands entry
-        if (Hidden || !ArchipelagoClient.Authenticated) return;
-
-        CommandText = GUI.TextField(CommandTextRect, CommandText);
-        if (!CommandText.IsNullOrWhiteSpace() && GUI.Button(SendCommandButton, "Send"))
-        {
-            Plugin.ArchipelagoClient.SendMessage(CommandText);
-            CommandText = "";
+            if (Pending.Count >= MaxPending) Pending.Dequeue();
+            Pending.Enqueue(message);
         }
     }
 
-    public static void UpdateWindow()
+    /// <summary>
+    /// Drains queued messages to the killfeed. Must be called from the main thread, once a
+    /// frame — see <see cref="ArchipelagoOverlay.Update"/>.
+    /// </summary>
+    public static void Pump()
     {
-        scrollText = "";
+        // MatchLogsOffline.WriteLog dereferences a transform it finds by name in Awake, so it
+        // is only usable once a scene that has one is up. Leave the messages queued until
+        // then rather than throwing one per frame.
+        if (PauseManager.Instance == null || MatchLogsOffline.Instance == null) return;
 
-        if (Hidden)
+        for (int i = 0; i < MaxPerFrame; i++)
         {
-            if (logLines.Count > 0)
+            string message;
+            lock (Pending)
             {
-                scrollText = logLines[logLines.Count - 1];
+                if (Pending.Count == 0) return;
+                message = Pending.Dequeue();
+            }
+
+            try
+            {
+                WriteToKillfeed(message);
+            }
+            catch (Exception e)
+            {
+                // Already in the BepInEx log by the time it got here, so the message itself
+                // is not lost. Report the failure once per occurrence and keep draining.
+                Plugin.BepinLogger.LogError($"[Killfeed] failed to write a line{Environment.NewLine}{e}");
             }
         }
-        else
-        {
-            for (var i = 0; i < logLines.Count; i++)
-            {
-                scrollText += "> ";
-                scrollText += logLines.ElementAt(i);
-                if (i < logLines.Count - 1)
-                {
-                    scrollText += "\n\n";
-                }
-            }
-        }
-
-        var width = (int)(Screen.width * 0.4f);
-        int height;
-        int scrollDepth;
-        if (Hidden)
-        {
-            height = (int)(Screen.height * 0.03f);
-            scrollDepth = height;
-        }
-        else
-        {
-            height = (int)(Screen.height * 0.3f);
-            scrollDepth = height * 10;
-        }
-
-        window = new Rect(Screen.width / 2 - width / 2, 0, width, height);
-        scroll = new Rect(0, 0, width * 0.9f, scrollDepth);
-        scrollView = new Vector2(0, scrollDepth);
-        text = new Rect(0, 0, width, scrollDepth);
-
-        textStyle.alignment = TextAnchor.LowerLeft;
-        textStyle.fontSize = Hidden ? (int)(Screen.height * 0.0165f) : (int)(Screen.height * 0.0185f);
-        textStyle.normal.textColor = Color.white;
-        textStyle.wordWrap = !Hidden;
-
-        var xPadding = (int)(Screen.width * 0.01f);
-        var yPadding = (int)(Screen.height * 0.01f);
-
-        textStyle.padding = Hidden
-            ? new RectOffset(xPadding / 2, xPadding / 2, yPadding / 2, yPadding / 2)
-            : new RectOffset(xPadding, xPadding, yPadding, yPadding);
-
-        var buttonWidth = (int)(Screen.width * 0.12f);
-        var buttonHeight = (int)(Screen.height * 0.03f);
-
-        hideShowButton = new Rect(Screen.width / 2 + width / 2 + buttonWidth / 3, Screen.height * 0.004f, buttonWidth,
-            buttonHeight);
-
-        // draw server command text field and button
-        width = (int)(Screen.width * 0.4f);
-        var xPos = (int)(Screen.width / 2.0f - width / 2.0f);
-        var yPos = (int)(Screen.height * 0.307f);
-        height = (int)(Screen.height * 0.022f);
-
-        CommandTextRect = new Rect(xPos, yPos, width, height);
-
-        width = (int)(Screen.width * 0.035f);
-        yPos += (int)(Screen.height * 0.03f);
-        SendCommandButton = new Rect(xPos, yPos, width, height);
     }
+
+    private static void WriteToKillfeed(string text) => PauseManager.Instance.WriteOfflineLog(text);
 }

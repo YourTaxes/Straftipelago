@@ -41,6 +41,19 @@ public class ArchipelagoClient
             Plugin.BepinLogger.LogError(e);
         }
 
+        // CreateSession throws on an address it cannot parse, which the catch above logs -
+        // but it leaves session null, and TryConnect dereferences it inside a ThreadPool work
+        // item where its own try/catch cannot see the throw. Report it here instead.
+        if (session == null)
+        {
+            ArchipelagoConsole.LogMessage($"Could not open a session for '{ServerData.Uri}'. Check the Host field.");
+            return;
+        }
+
+        // Set before TryConnect, and cleared by HandleConnectResult on both outcomes. Without
+        // it the guard above never fired and every press of Connect started another session
+        // over the top of the one already in flight.
+        attemptingConnection = true;
         TryConnect();
     }
 
@@ -121,7 +134,12 @@ public class ArchipelagoClient
     /// <summary>
     /// something went wrong, or we need to properly disconnect from the server. cleanup and re null our session
     /// </summary>
-    private void Disconnect()
+    /// <remarks>
+    /// Public because the Mod Menu page's Disconnect button calls it (see
+    /// <see cref="ArchipelagoMenu"/>); the failure and socket-closed paths below still use it
+    /// the same way they always did.
+    /// </remarks>
+    public void Disconnect()
     {
         Plugin.BepinLogger.LogDebug("disconnecting from server...");
         session?.Socket.DisconnectAsync();
