@@ -77,7 +77,7 @@ public class Plugin : BaseUnityPlugin
         // a secondary NullReferenceException.
         try
         {
-            DisableQuickEdit();
+            //DisableQuickEdit();
 
             // Plugin startup logic
             BepinLogger = Logger;
@@ -108,8 +108,21 @@ public class Plugin : BaseUnityPlugin
                     BepinLogger.LogError("Embedded resource 'roulette_item' not found");
                 }
             }
-            ArchipelagoClient = new ArchipelagoClient();
-            ArchipelagoConsole.Awake();
+            try
+            {
+                ArchipelagoClient = new ArchipelagoClient();
+            } catch (Exception e)
+            {
+                BepinLogger.LogError($"Failed to initialize ArchipelagoClient: {e}");
+            }
+            try
+            {
+                ArchipelagoConsole.Awake();
+            } catch (Exception e)
+            {
+                BepinLogger.LogError($"Failed to initialize ArchipelagoConsole: {e}");
+            }
+            
             new Harmony(PluginGUID).PatchAll();
 
             ArchipelagoConsole.LogMessage($"{ModDisplayInfo} loaded!");
@@ -125,7 +138,7 @@ public class Plugin : BaseUnityPlugin
 
     private void OnGUI()
     {
-        //BepinLogger.LogInfo("mod Gui");
+        BepinLogger.LogInfo("mod Gui");
         // show the mod is currently loaded in the corner
         GUI.Label(new Rect(16, 16, 300, 20), ModDisplayInfo);
         ArchipelagoConsole.OnGUI();
