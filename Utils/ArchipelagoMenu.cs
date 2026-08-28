@@ -50,6 +50,15 @@ internal static class ArchipelagoMenu
     public static ConfigEntry<bool> GreenMode { get; private set; }
 
     /// <summary>
+    /// The colour Green Mode multiplies over the camera, as RGB in 0-1. A Vector3 rather
+    /// than a Color because it carries no alpha: PPv2 ignores the alpha of a colour filter,
+    /// so a Color would offer a fourth number that does nothing. Read by
+    /// <see cref="GreenModeTint"/>, and hidden from the Mod Menu page in
+    /// <see cref="Install"/>.
+    /// </summary>
+    public static ConfigEntry<Vector3> GreenModeTintRgb { get; private set; }
+
+    /// <summary>
     /// Binds the config and registers the page. Called once, from <see cref="Plugin.Awake"/>.
     /// </summary>
     /// <param name="config">The plugin's own <c>Config</c>.</param>
@@ -64,6 +73,11 @@ internal static class ArchipelagoMenu
         ModMenuCustomisation.RegisterContentBuilder(Build);
         ModMenuCustomisation.SetPluginDescription(
             "Archipelago support for STRAFTAT. Connect to a room from the login fields above.");
+
+        // Deliberately not on the page: the toggle is the setting players are meant to
+        // touch, and a raw RGB triple next to it is noise. Mod Menu skips any entry
+        // named here when it generates the list.
+        ModMenuCustomisation.HideEntry(GreenModeTintRgb);
 
         Sprite icon = LoadIcon();
         if (icon != null) ModMenuCustomisation.SetPluginIcon(icon);
@@ -146,6 +160,29 @@ internal static class ArchipelagoMenu
         
         GreenMode = config.Bind("Green Mode", "Green Mode", false,
             "Challenge me in Green Mode.");
+
+        // Fires on the frame the checkbox is clicked, on the main thread. A bool entry
+        // only raises this when the value actually changes, so one click is one message.
+        GreenMode.SettingChanged += (_, _) =>
+        {
+            ArchipelagoConsole.LogMessage("Challenge me in Green Mode");
+
+            // Toggling mid-match should be visible now rather than at the next spawn -
+            // the Awake patch only ever catches players that have yet to be created.
+            GreenModeTint.RefreshAll();
+        };
+
+        // Each channel is multiplied over what the camera renders, so 1 leaves a channel
+        // untouched and 0 erases it. Pure green (0,1,0) is legal but drains every other
+        // channel, which takes the readability of the game with it - hence the default
+        // leaving a quarter of the red and blue in place.
+        GreenModeTintRgb = config.Bind("Green Mode", "Tint RGB",
+            new Vector3(0.25f, 1f, 0.25f),
+            "The colour Green Mode multiplies over the camera, as RGB in the 0-1 range. " +
+            "Not shown in the Mod Menu page; edit it here.");
+
+        // Picked up without a restart when this file is edited and BepInEx reloads it.
+        GreenModeTintRgb.SettingChanged += (_, _) => GreenModeTint.RefreshAll();
     }
 
     /// <summary>
