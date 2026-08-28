@@ -1,21 +1,45 @@
 # Straftipelago
 A mod for the game Straftat that gives it integration with archipelago multiworlds.
 
-## Requirements
+Also adds Green Mode.
+Challenge Me.
 
-- **[MyceliumNetworking for STRAFTAT](https://thunderstore.io/c/straftat/)** — required, not
-  optional. Every player who picks up a Roulette Item rolls a weapon from their own local pool
-  and needs to ask the host to spawn it; Mycelium carries that one message. Without it the
-  roulette rolls and then does nothing, leaving the item stuck in your hand.
+## Installation and Use
 
-  The mod declares this with `[BepInDependency]`, so BepInEx will refuse to load Straftipelago
-  if Mycelium is missing rather than failing halfway through a match.
+Installation is very simple, move the mod into your Unity Modloader of your choice, and include the dependancies. 
 
-  (The game's own networking cannot do this. It has the right RPC — `PlayerSpawnObject
-  .SpawnObject` — but a client may only invoke a ServerRpc on a NetworkObject it owns, and
-  that component is not on the player prefab. See the class comment in `Utils/RouletteNet.cs`
-  for the full search and the one remaining pure-vanilla alternative.)
+Said Dependancies include -
 
-- This mod is **not vanilla-compatible** (`[assembly: StraftatMod(isVanillaCompatible: false)]`),
-  so every player in the lobby needs it. The "Incompatible assemblies found" warning at startup
-  is expected and benign.
+### MyceliumNetworking
+
+Download - **[MyceliumNetworking for STRAFTAT](https://thunderstore.io/c/straftat/p/straftatmodding/MyceliumNetworking/)**
+
+MyceliumNetworking is used to send new RPC messages to and from the server. In the context of this mod, it is used to notify the lobby host that a client player has picked up a Roulette item, so that the host can spawn it for everyone. 
+
+Without this, the game is just bros holding circles. 
+
+### ModMenu
+
+Download - **[ModMenu for STRAFTAT](https://thunderstore.io/c/straftat/p/straftatmodding/MyceliumNetworking/)**
+
+ModMenu adds a custom UI in the options menu for changing the configurations of other mods that are installed. Typically this would not be a required dependancy, but I use the API provided by this mod in order to make the actual Archipelago login screen. So it's kinda required to join any room.
+
+FYI, this mod is not vanilla compatable, so don't try that.
+
+### Use in game
+
+When you launch the game, your first step is to go to options and go to the mods tab (provided with ModMenu), and then go to the page for Straftipeago. Here, you will be able to enter the information and enter the room for Archipelago. Also, I would take the time to configre the other settings there, such as Green Mode. 
+
+Challenge Me
+
+
+Next, go back to the main menu, and then join your lobby for STRAFTAT, and get started.
+
+
+
+## Licences
+
+All the code was done by me, as were all the assets were painstakingly modeled (the single cylelder with 12 circles). 
+
+However, I did not make the picture of the Archipelago logo, so here is the copyright for that.
+Archipelago Logo: © 2022 by Krista Corkos and Christopher Wilson is licensed under Attribution-NonCommercial 4.0 International. To view a copy of this license, visit http://creativecommons.org/licenses/by-nc/4.0/
