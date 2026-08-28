@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using HarmonyLib;
 using Straftapelago.Finnegan_McD.org.Patches;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -126,10 +127,15 @@ internal class ArchipelagoOverlay : MonoBehaviour
     /// on pause so it never sits on top of gameplay. PauseManager.Instance is null-checked
     /// rather than assumed: HUDTween's own null-dereference of that singleton is one of the
     /// open crash candidates, so it is demonstrably not always there.
+    ///
+    /// Hidden again once the player opens Settings from the pause menu: that screen is a
+    /// full-width layout the list would sit on top of, and pause stays true the whole time
+    /// it is up. See <see cref="InSettingsMenu"/>.
     /// </remarks>
     private static void DrawObtainedWeapons()
     {
         if (PauseManager.Instance == null || !PauseManager.Instance.pause) return;
+        if (InSettingsMenu()) return;
 
         List<GameObject> obtained = RouletteState.obtained_Items;
 
@@ -205,5 +211,53 @@ internal class ArchipelagoOverlay : MonoBehaviour
 
             GUI.Label(new Rect(entryLeft, entryTop, entryWidth, entryHeight), text, style);
         }
+    }
+    /// <summary>Cached so the reflection below does not run on every OnGUI pass.</summary>
+    private static PauseManager settingsMenuOwner;
+    private static GameObject settingsMenuObject;
+    private static bool warnedAboutMissingSettingsMenu;
+
+    /// <summary>
+    /// True while the Settings screen is up.
+    /// </summary>
+    /// <remarks>
+    /// <para>PauseManager.pause stays true the whole time Settings is open — it means "the
+    /// game is paused", not "the pause menu is the thing on screen" — so it cannot tell the
+    /// two apart on its own. The private <c>optionsMenu</c> GameObject can: vanilla
+    /// <c>PauseManager.Menu()</c> (the Escape handler) reads its <c>activeSelf</c> and toggles
+    /// it, which is exactly the state being asked about here.</para>
+    /// <para>This also covers Mod Menu, including this mod's own page, without a second check:
+    /// its <c>PauseManagerPatch.InitModsTab</c> postfix adds a "ModsTab" next to the vanilla
+    /// PcTab/AudioTab/GraphTab under the same OPTIONS HUD, so the mod list is a tab inside
+    /// this screen rather than a separate one.</para>
+    /// <para><c>activeInHierarchy</c> rather than <c>activeSelf</c>, which is what vanilla
+    /// happens to use: the question here is "is it on screen", and a parent being hidden would
+    /// leave activeSelf true while nothing is actually visible.</para>
+    /// </remarks>
+    private static bool InSettingsMenu()
+    {
+        PauseManager pauseManager = PauseManager.Instance;
+        if (pauseManager == null) return false;
+
+        // Re-resolve when the singleton is replaced; Unity's fake-null makes this also fire
+        // when the previous one was destroyed.
+        if (pauseManager != settingsMenuOwner)
+        {
+            settingsMenuOwner = pauseManager;
+            settingsMenuObject = Traverse.Create(pauseManager).Field("optionsMenu").GetValue<GameObject>();
+
+            if (settingsMenuObject == null && !warnedAboutMissingSettingsMenu)
+            {
+                // Once, not every frame. Failing open (list stays visible) is the harmless
+                // direction, but a silent failure would look like the gate simply not working.
+                warnedAboutMissingSettingsMenu = true;
+                Plugin.BepinLogger.LogWarning(
+                    "[Overlay] PauseManager.optionsMenu did not resolve, so the weapon list " +
+                    "cannot tell the pause menu from the Settings screen and will stay visible " +
+                    "on both. The field was probably renamed by a game update.");
+            }
+        }
+
+        return settingsMenuObject != null && settingsMenuObject.activeInHierarchy;
     }
 }
