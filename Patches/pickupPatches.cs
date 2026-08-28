@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -354,11 +354,11 @@ public class ItemSpawnerStartPatch
         // Spawn the roulette item at the item spawner's position
         string itemName = __instance.itemToSpawn?.name ?? "null";
         __instance.itemToSpawn = Plugin.RouletteItemPrefab;
-        ItemBehaviour ib = __instance.itemToSpawn.GetComponent<ItemBehaviour>();
-        Traverse t = Traverse.Create(ib);
+        ItemBehaviour item = __instance.itemToSpawn.GetComponent<ItemBehaviour>();
+        Traverse t = Traverse.Create(item);
         t.Field("dispenserStart").SetValue(false);
 
-        // DIAGNOSTIC (candidate C1): `ib` here is the component on the shared PREFAB
+        // DIAGNOSTIC (candidate C1): `item` here is the component on the shared PREFAB
         // asset, not on a scene instance — so this dispenserStart=false write persists
         // into every roulette ever spawned, on every round. Vanilla ItemBehaviour.Start()
         // dereferences transform.parent.up when dispenserStart is false, and while the
@@ -367,8 +367,8 @@ public class ItemSpawnerStartPatch
         // asset", which is the condition that makes the write global.
         DiagLog.Log("SpawnerReplacement",
             $"spawner={__instance.gameObject.name} replaced '{itemName}' with roulette prefab. " +
-            $"mutatedObject={ib.gameObject.name} " +
-            $"isPrefabAsset={(!ib.gameObject.scene.IsValid() ? "YES (write is global)" : "no (scene instance)")} " +
+            $"mutatedObject={item.gameObject.name} " +
+            $"isPrefabAsset={(!item.gameObject.scene.IsValid() ? "YES (write is global)" : "no (scene instance)")} " +
             $"dispenserStart now={t.Field("dispenserStart").GetValue<bool>()}");
         //Plugin.BepinLogger.LogInfo("dispenserStart is now " + t.Field("dispenserStart").GetValue<bool>());
         //Plugin.BepinLogger.LogInfo("Replaced " + itemName + " spawnerwith Roulette Item Prefab");
@@ -381,7 +381,8 @@ public class ItemSpawnerSpawnPatch
 {
     static void Prefix(ItemSpawner __instance)
     {
-        bool dispenserStart = Traverse.Create(__instance.itemToSpawn.GetComponent<ItemBehaviour>()).Field("dispenserStart").GetValue<bool>();
+        ItemBehaviour item = __instance.itemToSpawn.GetComponent<ItemBehaviour>();
+        bool dispenserStart = Traverse.Create(item).Field("dispenserStart").GetValue<bool>();
         //Plugin.BepinLogger.LogInfo("dispenserStart is now " + dispenserStart);
     }
 }
@@ -888,47 +889,47 @@ public class PlayerPickupUpdatePatch
             }
         }
 
-        Traverse t = Traverse.Create(__instance);
-        if (t.Field("weaponInHand").GetValue<Weapon>() != null) return true;
+        Traverse trav = Traverse.Create(__instance);
+        if (trav.Field("weaponInHand").GetValue<Weapon>() != null) return true;
 
-        GameObject objInHand = t.Method("sync___get_value_objInHand").GetValue<GameObject>();
+        GameObject objInHand = trav.Method("sync___get_value_objInHand").GetValue<GameObject>();
         if (objInHand == null) return true;
 
-        ItemBehaviour ib = objInHand.GetComponent<ItemBehaviour>();
-        if (ib == null || ib.weaponName != "Roulette Item") return true;
+        ItemBehaviour item = objInHand.GetComponent<ItemBehaviour>();
+        if (item == null || item.weaponName != "Roulette Item") return true;
 
         // weaponInHand IS set (the roulette item's assetbundle-bound Gun component), but none of
         // Gun/Weapon's fields (fpArms, camAnimScript, etc.) are wired up like a real weapon, so
         // vanilla RightHandFix/LeftHandFix would NRE dereferencing them — run Update manually instead.
-        t.Method("UpdateIKPoistion").GetValue();
+        trav.Method("UpdateIKPoistion").GetValue();
 
         if (!__instance.IsOwner) return false;
 
         // RightHandFix/LeftHandFix internally call RightHandDrop/LeftHandDrop which also
         // dereference weaponInHand — skip them when the roulette item is held
-        t.Field("dropTimer").SetValue(t.Field("dropTimer").GetValue<float>() - Time.deltaTime);
-        t.Field("interactTimer").SetValue(t.Field("interactTimer").GetValue<float>() - Time.deltaTime);
+        trav.Field("dropTimer").SetValue(trav.Field("dropTimer").GetValue<float>() - Time.deltaTime);
+        trav.Field("interactTimer").SetValue(trav.Field("interactTimer").GetValue<float>() - Time.deltaTime);
 
-        if (!t.Method("sync___get_value_hasObjectInHand").GetValue<bool>())
+        if (!trav.Method("sync___get_value_hasObjectInHand").GetValue<bool>())
         {
-            var pc = t.Field("playerController").GetValue<FirstPersonController>();
+            var pc = trav.Field("playerController").GetValue<FirstPersonController>();
             pc.movementFactor = 1f;
             pc.jumpFactor = 1f;
             pc.maxWallJumps = 1;
             pc.wallJumpFactor = 1f;
         }
 
-        Camera cam = t.Field("cam").GetValue<Camera>();
+        Camera cam = trav.Field("cam").GetValue<Camera>();
         if (cam != null)
         {
-            t.Method("HandleInteractionCheck").GetValue();
-            t.Method("HandleInteractEnvironment").GetValue();
-            t.Method("HandleAboubiGrab").GetValue();
+            trav.Method("HandleInteractionCheck").GetValue();
+            trav.Method("HandleInteractEnvironment").GetValue();
+            trav.Method("HandleAboubiGrab").GetValue();
 
-            Animator animator = t.Field("animator").GetValue<Animator>();
-            Animator globalAnimator = t.Field("globalAnimator").GetValue<Animator>();
+            Animator animator = trav.Field("animator").GetValue<Animator>();
+            Animator globalAnimator = trav.Field("globalAnimator").GetValue<Animator>();
 
-            if (ib.rightHandAnim == "")
+            if (item.rightHandAnim == "")
             {
                 animator.SetBool("TwoHanded", false);
                 animator.SetBool("DoubleHanded", false);
@@ -951,83 +952,85 @@ public class DropObserverPatch
 {
     static bool Prefix(PlayerPickup __instance, GameObject obj, bool rightHand)
     {
-        ItemBehaviour ib = obj?.GetComponent<ItemBehaviour>();
-        if (ib == null || ib.weaponName != "Roulette Item") return true;
+        ItemBehaviour item = obj?.GetComponent<ItemBehaviour>();
+        if (item == null || item.weaponName != "Roulette Item") return true;
 
-        Traverse t = Traverse.Create(__instance);
+        Traverse trav = Traverse.Create(__instance);
 
         if (!__instance.IsOwner)
-            ib.StickOnGroundObservers();
+            item.StickOnGroundObservers();
 
         obj.transform.DOKill(false);
 
         if (__instance.IsOwner)
         {
             PauseManager.Instance.MoveAmmoDisplay(false, rightHand);
-            t.Field("playerController").GetValue<FirstPersonController>().isScopeAiming = false;
+            trav.Field("playerController").GetValue<FirstPersonController>().isScopeAiming = false;
             if (rightHand)
             {
-                t.Field("weaponInHand").SetValue(null);
-                t.Field("behaviourInHand").SetValue(null);
+                trav.Field("weaponInHand").SetValue(null);
+                trav.Field("behaviourInHand").SetValue(null);
             }
             else
             {
-                t.Field("weaponInLeftHand").SetValue(null);
-                t.Field("behaviourInLeftHand").SetValue(null);
+                trav.Field("weaponInLeftHand").SetValue(null);
+                trav.Field("behaviourInLeftHand").SetValue(null);
             }
         }
 
-        if (ib.rightHandAnim != "")
+        if (item.rightHandAnim != "")
         {
-            Animator anim = t.Field("animator").GetValue<Animator>();
-            anim.SetBool(rightHand ? ib.rightHandAnim : ib.leftHandAnim, false);
+            Animator anim = trav.Field("animator").GetValue<Animator>();
+            anim.SetBool(rightHand ? item.rightHandAnim : item.leftHandAnim, false);
         }
 
-        object camAnimScript = t.Field("camAnimScript").GetValue();
+        object camAnimScript = trav.Field("camAnimScript").GetValue();
         Traverse.Create(camAnimScript).Field("rotateBack").SetValue(true);
 
-        ib.playerPickup = null;
-        ib.playerController = null;
-        ib.rootObject = null;
-        ib.OnDrop(t.Field("cam").GetValue<Camera>());
-        // skipped: obj.GetComponent<Weapon>().camAnimScript = null — no Weapon on roulette item
-        ib.cam = null;
+        item.playerPickup = null;
+        item.playerController = null;
+        item.rootObject = null;
+        item.OnDrop(trav.Field("cam").GetValue<Camera>());
+        item.cam = null;
         obj.transform.parent = null;
         obj.transform.localScale = new Vector3(2f, 2f, 2f);
-        ib.UnsetLayer();
+        item.UnsetLayer();
         obj.layer = 7;
-        object rigBuilder = t.Field("RigBuilder").GetValue();
+        object rigBuilder = trav.Field("RigBuilder").GetValue();
         Traverse.Create(rigBuilder).Method("Build").GetValue();
 
         return false;
     }
 }
 
+/*
+Prefix for right hand pickup, which 
+*/
 [HarmonyPatch(typeof(PlayerPickup), "RightHandPickup")]
 public class RightHandPickupPatch
 {
-    static void DoSingleHandPickup(PlayerPickup instance, Traverse t, ItemBehaviour ib, Camera cam)
+    static void DoSingleHandPickup(PlayerPickup instance, Traverse trav, ItemBehaviour item, Camera cam)
     {
-        Transform[] pickupPos = t.Field("pickupPositionRightHand").GetValue<Transform[]>();
-        t.Method("SetObjectInHandServer",
+        Transform[] pickupPos = trav.Field("pickupPositionRightHand").GetValue<Transform[]>();
+        trav.Method("SetObjectInHandServer",
             instance.sync___get_value_objInHand(),
-            pickupPos[ib.camChildIndex].position,
-            pickupPos[ib.camChildIndex].rotation,
+            pickupPos[item.camChildIndex].position,
+            pickupPos[item.camChildIndex].rotation,
             cam.gameObject,
             true).GetValue();
-        t.Method("SetRightIKTarget", ib.gripRight).GetValue();
-        object rigBuilder = t.Field("RigBuilder").GetValue();
+        trav.Method("SetRightIKTarget", item.gripRight).GetValue();
+        object rigBuilder = trav.Field("RigBuilder").GetValue();
         Traverse.Create(rigBuilder).Method("Build").GetValue();
     }
 
     static bool Prefix(PlayerPickup __instance)
     {
-        Traverse t = Traverse.Create(__instance);
-        Camera cam = t.Field("cam").GetValue<Camera>();
-        float interactionDistance = t.Field("interactionDistance").GetValue<float>();
-        LayerMask interactionLayer = t.Field("interactionLayer").GetValue<LayerMask>();
-        float sphereRadius = t.Field("sphereRadius").GetValue<float>();
-        float currentHitDistance = t.Field("currentHitDistance").GetValue<float>();
+        Traverse trav = Traverse.Create(__instance);
+        Camera cam = trav.Field("cam").GetValue<Camera>();
+        float interactionDistance = trav.Field("interactionDistance").GetValue<float>();
+        LayerMask interactionLayer = trav.Field("interactionLayer").GetValue<LayerMask>();
+        float sphereRadius = trav.Field("sphereRadius").GetValue<float>();
+        float currentHitDistance = trav.Field("currentHitDistance").GetValue<float>();
 
         GameObject hitObj = null;
         RaycastHit hit, hit2;
@@ -1037,71 +1040,18 @@ public class RightHandPickupPatch
             hitObj = hit2.transform.gameObject;
 
         if (hitObj == null || hitObj.GetComponent<Weapon>() != null) return true;
-        ItemBehaviour ib = hitObj.GetComponent<ItemBehaviour>();
-        if (ib?.weaponName != "Roulette Item") return true;
+        ItemBehaviour item = hitObj.GetComponent<ItemBehaviour>();
+        if (item?.weaponName != "Roulette Item") return true;
         
         __instance.LeftHandDrop();
         __instance.RightHandDrop();
-        Plugin.BepinLogger.LogInfo("Picked up Roulette Item");
-        // AudioClip pickupClip = t.Field("pickupClip").GetValue<AudioClip>();
-
-        // if (!__instance.sync___get_value_hasObjectInHand() && hitObj.layer == 7)
-        // {
-        //     SoundManager.Instance.PlaySound(pickupClip);
-        //     t.Method("sync___set_value_objInHand", hitObj, true).GetValue();
-        //     t.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
-        //     DoSingleHandPickup(__instance, t, ib, cam);
-        // }
-        // else if (__instance.sync___get_value_hasObjectInHand())
-        // {
-        //     SoundManager.Instance.PlaySound(pickupClip);
-        //     t.Method("RightHandDrop").GetValue();
-        //     t.Method("sync___set_value_objInHand", hitObj, true).GetValue();
-        //     t.Method("sync___set_value_hasObjectInHand", true, true).GetValue();
-        //     DoSingleHandPickup(__instance, t, ib, cam);
-        // }
+        //Plugin.BepinLogger.LogInfo("Picked up Roulette Item");
 
         return false;
     }
 }
 
-// LeftHandPickupPatch used to live here: a full-method overwrite of vanilla
-// PlayerPickup.LeftHandPickup(), needed only because the old roll ran REENTRANTLY inside
-// OnGrab and swapped objInLeftHand out from under vanilla, which then stomped it back using
-// a stale raycast-hit local. The roll is now a network round trip, so vanilla's pickup has
-// completed long before anything is swapped and there is nothing left to defend against —
-// and StraftatModAttribute.Documentation warns against exactly this kind of overwrite
-// prefix. Removed rather than left in place.
 
-//unused, initally used for testing the roulette item spawn on the player pickup script. This is now handled by the item spawner script.
-/*
-[HarmonyPatch(typeof(FirstPersonController), "Awake")]
-public class FirstPersonControllerAwakePatch
-{
-    static void Postfix(FirstPersonController __instance)
-    {
-        Plugin.BepinLogger.LogInfo("FirstPersonController Awake called");
-        if (Plugin.RouletteItemPrefab == null) 
-        {
-            Plugin.BepinLogger.LogError("RouletteItemPrefab is null");
-            return;
-        }
-
-        if (!FishNet.InstanceFinder.IsServer) return;
-
-        NetworkObject nob = Plugin.RouletteItemPrefab.GetComponent<NetworkObject>();
-        if (nob != null)
-        {
-            DefaultPrefabObjects spawnables = FishNet.InstanceFinder.NetworkManager.SpawnablePrefabs as DefaultPrefabObjects;
-            spawnables?.AddObject(nob, true);
-        }
-
-        Vector3 spawnPos = __instance.transform.position + __instance.transform.forward * 5f;
-        GameObject spawned = UnityEngine.Object.Instantiate(Plugin.RouletteItemPrefab, spawnPos, Quaternion.identity);
-        FishNet.InstanceFinder.ServerManager.Spawn(spawned);
-    }
-}
-*/
 
 //NEED TO USE THE Player pickup right hand positions to dictate where the item will be.
 
