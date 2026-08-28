@@ -24,7 +24,9 @@ Download - **[ModMenu for STRAFTAT](https://thunderstore.io/c/straftat/p/strafta
 
 ModMenu adds a custom UI in the options menu for changing the configurations of other mods that are installed. Typically this would not be a required dependancy, but I use the API provided by this mod in order to make the actual Archipelago login screen. So it's kinda required to join any room.
 
-FYI, this mod is not vanilla compatable, so don't try that.
+
+
+FYI, this mod is not vanilla compatable, so all players need the mod.
 
 ### Use in game
 
