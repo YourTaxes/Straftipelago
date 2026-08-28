@@ -1,42 +1,26 @@
-using System;
-using System.Collections.Generic;
 using BepInEx;
+using ChatCommands;
+using HarmonyLib;
+using UnityEngine;
 
 namespace Straftapelago.Finnegan_McD.org.Utils;
 
 /// <summary>
-/// Where every Archipelago-facing message goes. Each one is written to the BepInEx log and
-/// to the game's killfeed.
+/// The Archipelago console. Everything the room says, and everything this mod says about the
+/// connection, is written into the game's chat.
 /// </summary>
 /// <remarks>
-/// <para>This used to be an IMGUI window (a scrolling terminal drawn by
-/// <see cref="ArchipelagoOverlay"/>, adapted from oc2-modding's GameLog) plus a text field
-/// for sending server commands. The terminal now goes to the killfeed instead, so none of
-/// that drawing survives; <see cref="LogMessage"/> keeps its signature, which is what the
-/// rest of the mod calls.</para>
-/// <para><b>Why the queue.</b> Messages arrive on threads that are not Unity's: the
-/// Archipelago client's MessageLog callback fires on its websocket thread, and
-/// <c>HandleConnectResult</c> runs on a ThreadPool thread. Writing a killfeed line
-/// Instantiates a prefab, and every Unity API involved is main-thread-only, so the write
-/// cannot happen where the message is produced. Messages are queued here and drained by
-/// <see cref="Pump"/> from the overlay's Update instead.</para>
+/// <para>Printed through <c>ChatCommands.ChatPatches.SendSystemMessage</c>, the same call its
+/// Evaluator uses to show the output of a command - so a line from the Archipelago room looks
+/// exactly like the output of <c>/help</c>, and lands in the same chat log. The other half of
+/// the console, the commands the player types, is <see cref="ArchipelagoChatCommands"/>.</para>
+/// <para>This class was once an IMGUI window drawn by <see cref="ArchipelagoOverlay"/>, and
+/// then a router into the killfeed. Only <see cref="LogMessage"/> survives both moves, because
+/// it is what the rest of the mod calls.</para>
 /// </remarks>
 public static class ArchipelagoConsole
 {
-    /// <summary>
-    /// Held rather than dropped when the killfeed is not up yet, so that messages produced
-    /// in a menu are not lost. Capped so a long disconnected session cannot grow unbounded;
-    /// the BepInEx log has the complete record either way.
-    /// </summary>
-    private const int MaxPending = 80;
-
-    /// <summary>
-    /// Killfeed lines fade on their own timer, so a backlog released all at once would push
-    /// itself off the screen. Trickle it instead.
-    /// </summary>
-    private const int MaxPerFrame = 3;
-
-    private static readonly Queue<string> Pending = new();
+    private static readonly MainThreadQueue Queue = new(TryWriteToChat, "Console");
 
     /// <summary>Kept for the call in <see cref="Plugin.Awake"/>; there is nothing to set up.</summary>
     public static void Awake()
@@ -47,49 +31,49 @@ public static class ArchipelagoConsole
     {
         if (message.IsNullOrWhiteSpace()) return;
 
-        // Unconditional, and first: this is the record that survives whether or not the
-        // killfeed ever comes up, and it is safe from any thread.
+        // Unconditional, and first: this is the record that survives whether or not the chat
+        // ever comes up, and it is safe to call from any thread.
         Plugin.BepinLogger.LogMessage(message);
-
-        lock (Pending)
-        {
-            if (Pending.Count >= MaxPending) Pending.Dequeue();
-            Pending.Enqueue(message);
-        }
+        Queue.Enqueue(message);
     }
 
     /// <summary>
-    /// Drains queued messages to the killfeed. Must be called from the main thread, once a
-    /// frame — see <see cref="ArchipelagoOverlay.Update"/>.
+    /// Drains queued messages into the chat. Must be called from the main thread, once a
+    /// frame - see <see cref="ArchipelagoOverlay.Update"/>.
     /// </summary>
-    public static void Pump()
+    public static void Pump() => Queue.Pump();
+
+    private static bool TryWriteToChat(string message)
     {
-        // MatchLogsOffline.WriteLog dereferences a transform it finds by name in Awake, so it
-        // is only usable once a scene that has one is up. Leave the messages queued until
-        // then rather than throwing one per frame.
-        if (PauseManager.Instance == null || MatchLogsOffline.Instance == null) return;
+        if (!ChatReady()) return false;
 
-        for (int i = 0; i < MaxPerFrame; i++)
-        {
-            string message;
-            lock (Pending)
-            {
-                if (Pending.Count == 0) return;
-                message = Pending.Dequeue();
-            }
-
-            try
-            {
-                WriteToKillfeed(message);
-            }
-            catch (Exception e)
-            {
-                // Already in the BepInEx log by the time it got here, so the message itself
-                // is not lost. Report the failure once per occurrence and keep draining.
-                Plugin.BepinLogger.LogError($"[Killfeed] failed to write a line{Environment.NewLine}{e}");
-            }
-        }
+        ChatPatches.SendSystemMessage(message);
+        return true;
     }
 
-    private static void WriteToKillfeed(string text) => PauseManager.Instance.WriteOfflineLog(text);
+    /// <summary>
+    /// Whether ChatCommands has captured the chat panel it prints into.
+    /// </summary>
+    /// <remarks>
+    /// Its printer takes the message prefab and the transform to parent it under from statics
+    /// filled in by its own postfix on <c>LobbyChatUILogic.Start</c>, so before that scene is
+    /// up they are null and printing would throw. Checked rather than caught, because "not in
+    /// a match yet" is the normal state on the menu screen and would otherwise throw an
+    /// exception per queued message per frame.
+    /// </remarks>
+    private static bool ChatReady()
+    {
+        try
+        {
+            return Traverse.Create(typeof(ChatPatches))
+                .Field("m_messageTemplate").GetValue<GameObject>() != null;
+        }
+        catch
+        {
+            // The field is private, so it is not part of ChatCommands' API and a future version
+            // may rename it. Assume ready and let the write itself decide; the queue reports a
+            // throw and moves on rather than jamming.
+            return true;
+        }
+    }
 }

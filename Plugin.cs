@@ -28,13 +28,20 @@ namespace Straftapelago.Finnegan_McD.org;
 // ArchipelagoMenu, which replaced the IMGUI connect form), so without it there is no way to
 // reach an Archipelago room at all. A hard dependency makes that a single explanatory line in
 // the chainloader log rather than a mod that loads and then silently cannot connect.
+//
+// ChatCommands is required because it IS the Archipelago console: its command registry carries
+// the !commands the player types, and its chat printer is where the room's replies appear.
+// Being a hard dependency also fixes load order in our favour - BepInEx runs a dependency's
+// Awake before ours, so its registry exists by the time we add commands to it in Awake.
 [BepInDependency(MyceliumDependencyGUID)]
 [BepInDependency(ModMenuDependencyGUID)]
+[BepInDependency(ChatCommandsDependencyGUID)]
 [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
 public class Plugin : BaseUnityPlugin
 {
     public const string MyceliumDependencyGUID = "RugbugRedfern.MyceliumNetworking";
     public const string ModMenuDependencyGUID = "kestrel.straftat.modmenu";
+    public const string ChatCommandsDependencyGUID = "kestrel.straftat.chatcommands";
 
     public const string PluginGUID = "org.Finnegan_McD.Straftapelago";
     public const string PluginName = "Straftapelago.Finnegan_McD.org";
@@ -140,6 +147,17 @@ public class Plugin : BaseUnityPlugin
             {
                 BepinLogger.LogError($"Failed to initialize ArchipelagoClient: {e}");
             }
+            // After the client exists, because the commands send through it. ChatCommands
+            // is a hard dependency, so its registry is already up by the time this runs.
+            try
+            {
+                ArchipelagoChatCommands.Install();
+            }
+            catch (Exception e)
+            {
+                BepinLogger.LogError($"Failed to register the Archipelago chat commands: {e}");
+            }
+
             try
             {
                 ArchipelagoConsole.Awake();

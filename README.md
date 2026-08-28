@@ -25,6 +25,12 @@ Download - **[ModMenu for STRAFTAT](https://thunderstore.io/c/straftat/p/strafta
 ModMenu adds a custom UI in the options menu for changing the configurations of other mods that are installed. Typically this would not be a required dependancy, but I use the API provided by this mod in order to make the actual Archipelago login screen. So it's kinda required to join any room.
 
 
+### ChatCommands
+
+Download - **[ChatCommands](https://thunderstore.io/c/straftat/p/kestrel/Chat_Commands/)**
+
+I was a big fan of the chat commands mod, as it was super useful for spawning weapons durring development to test things like kill interactions.
+ChatCommands is the Archipelago console. Every one of the server's `!commands` is registered as a chat command prefixed with `ap_` - `/ap_help`, `/ap_hint 'Progressive Sword'`, `/ap_missing` and so on - and whatever the room says back is printed into the chat, the same way `/help` prints its output. `/ap` sends a line to the room verbatim if you need a command this list does not name.
 
 FYI, this mod is not vanilla compatable, so all players need the mod.
 

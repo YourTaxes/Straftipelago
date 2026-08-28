@@ -89,14 +89,15 @@ internal class ArchipelagoOverlay : MonoBehaviour
     }
 
     /// <summary>
-    /// Pumps the killfeed queue. This is the mod's one guaranteed per-frame main-thread
-    /// callback, and <see cref="ArchipelagoConsole"/> needs exactly that: its messages are
-    /// produced on the Archipelago client's websocket and ThreadPool threads, where no Unity
-    /// API may be touched.
+    /// Pumps both message queues. This is the mod's one guaranteed per-frame main-thread
+    /// callback, and both sinks need exactly that: their messages are produced on the
+    /// Archipelago client's websocket and ThreadPool threads, where no Unity API may be
+    /// touched.
     /// </summary>
     private void Update()
     {
         ArchipelagoConsole.Pump();
+        Killfeed.Pump();
     }
 
     private void OnGUI()

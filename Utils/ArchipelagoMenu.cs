@@ -12,60 +12,35 @@ using Object = UnityEngine.Object;
 
 namespace Straftapelago.Finnegan_McD.org.Utils;
 
-/// <summary>
-/// The mod's page in Mod Menu, and the only login UI this mod has. It replaces the IMGUI
-/// host/slot/password/Connect block that used to be drawn by <see cref="ArchipelagoOverlay"/>.
-/// </summary>
-/// <remarks>
-/// <para>Mod Menu already generates a page from this plugin's config entries on its own —
-/// <see cref="CreateConfigs"/> binds them. All this adds is the login block at the top,
-/// because a header, three text fields and two buttons in a fixed order is not something an
-/// auto-generated list can express.</para>
-/// <para><b>The login fields are not config entries.</b> Each input is built from the Mod Menu
-/// API's own getter/setter pair, reading and writing
-/// <see cref="ArchipelagoClient.ServerData"/> — the object the Archipelago client already
-/// takes its connection details from. Nothing about them is written to the .cfg, so the host,
-/// slot name and password live only for the session.</para>
-/// <para><b>The builder runs once per page, not once per open.</b> Mod Menu caches the
-/// GameObjects it builds (OptionListPanel.m_optionCache) and on later opens merely
-/// re-activates them, calling UpdateAppearance() on value controllers but not on plain text
-/// or buttons. So the three inputs re-read ServerData every time the page is shown, while
-/// anything drawn as static text would go stale. That is why the connection status is
-/// reported through the info panel — SetInfoPanelContents runs on every hover — and through
-/// the killfeed, rather than as a line in the list.</para>
-/// </remarks>
+
+
+/*
+This class creates the menu page for this mod's settings, as well as the archipelago login page.
+it extensivly ueses the ModMenu Api to style the settings well in that tab.
+It also includes the logic for connecting to the archipelago server and disconnecting from it.
+The login fields themselves are not actually config entries, they are only used to login.
+*/
 internal static class ArchipelagoMenu
 {
     private const string Section = "Archipelago Login";
 
-    /// <summary>Set by the EmbeddedResource item in the csproj: folder path, dots for slashes.</summary>
+    //the resource path to the archipelago logo asset
     private const string IconResource = "Straftapelago.Finnegan_McD.org.Assets.logo.png";
 
-    /// <summary>
-    /// Read by <c>GrabPatches.EquipRolledWeapon</c>. Bound by <see cref="CreateConfigs"/>, so
-    /// it is non-null from <see cref="Plugin.Awake"/> onwards - well before any patch runs.
-    /// </summary>
+
+    // this config determines if 2 handed weapons are placed in the user's hand, or if they are placed on the ground
     public static ConfigEntry<bool> RolledTwoHandedWeaponsOverride { get; private set; }
 
+    //determines if you accept the challenge
     public static ConfigEntry<bool> GreenMode { get; private set; }
 
-    /// <summary>
-    /// The colour Green Mode multiplies over the camera, as RGB in 0-1. A Vector3 rather
-    /// than a Color because it carries no alpha: PPv2 ignores the alpha of a colour filter,
-    /// so a Color would offer a fourth number that does nothing. Read by
-    /// <see cref="GreenModeTint"/>, and hidden from the Mod Menu page in
-    /// <see cref="Install"/>.
-    /// </summary>
+    //determines the greenness. not visible through modmenu
     public static ConfigEntry<Vector3> GreenModeTintRgb { get; private set; }
 
-    /// <summary>
-    /// Binds the config and registers the page. Called once, from <see cref="Plugin.Awake"/>.
-    /// </summary>
-    /// <param name="config">The plugin's own <c>Config</c>.</param>
+    // creates the configs and the mod menu custom configs.
     public static void Install(ConfigFile config)
     {
-        // First: the bind is what creates BepInEx/config/org.Finnegan_McD.Straftapelago.cfg,
-        // and it is also what gives Mod Menu a page to hang the login block off (see Build).
+        //bind is what creates BepInEx/config/org.Finnegan_McD.Straftapelago.cfg
         CreateConfigs(config);
 
         // All three calls resolve the plugin by Assembly.GetCallingAssembly(), so they have to
@@ -74,27 +49,14 @@ internal static class ArchipelagoMenu
         ModMenuCustomisation.SetPluginDescription(
             "Archipelago support for STRAFTAT. Connect to a room from the login fields above.");
 
-        // Deliberately not on the page: the toggle is the setting players are meant to
-        // touch, and a raw RGB triple next to it is noise. Mod Menu skips any entry
-        // named here when it generates the list.
+        // hide green tint, so that it is still modifiable, but not as easy as the others
         ModMenuCustomisation.HideEntry(GreenModeTintRgb);
 
         Sprite icon = LoadIcon();
         if (icon != null) ModMenuCustomisation.SetPluginIcon(icon);
     }
 
-    /// <summary>
-    /// The Archipelago logo, for the mod's entry in Mod Menu's list.
-    /// </summary>
-    /// <remarks>
-    /// <para>Mod Menu can also find an icon on its own, by searching the plugin's folder for
-    /// an icon.png - but only files in the build output reach that folder, and Assets/logo.png
-    /// is a source file, so it is embedded in the assembly instead and decoded here.
-    /// SetPluginIcon takes precedence over that search either way.</para>
-    /// <para>Both objects are marked HideAndDontSave: they belong to no scene and are
-    /// referenced only by Mod Menu's list, so a scene change or an UnloadUnusedAssets sweep
-    /// would otherwise be free to collect the icon out from under it.</para>
-    /// </remarks>
+    // loads the sprite to be used in the modmenu
     private static Sprite LoadIcon()
     {
         try
@@ -133,22 +95,14 @@ internal static class ArchipelagoMenu
         }
         catch (Exception e)
         {
-            // An icon is decoration; losing it must not cost the page it is attached to.
+            // don't want the entire page to go under if this one icon isn't found.
             Plugin.BepinLogger.LogError($"Failed to load the Mod Menu icon{Environment.NewLine}{e}");
             return null;
         }
     }
 
-    /// <summary>
-    /// Every config entry this mod has. BepInEx writes the .cfg itself from these binds - an
-    /// install that has never run simply has no file yet, and one that has keeps whatever the
-    /// user edited - and Mod Menu turns each entry into a list item on the page on its own.
-    /// </summary>
-    /// <remarks>
-    /// The Archipelago login details are deliberately not bound here: they are session values
-    /// on <see cref="ArchipelagoData"/>, driven by the string inputs in <see cref="Build"/>,
-    /// so no host, slot name or room password is ever written to disk.
-    /// </remarks>
+
+    // creates the .cfg for every config entry. 
     private static void CreateConfigs(ConfigFile config)
     {
         RolledTwoHandedWeaponsOverride = config.Bind("Roulette", "Rolled 2 handed weapons override",
@@ -165,10 +119,10 @@ internal static class ArchipelagoMenu
         // only raises this when the value actually changes, so one click is one message.
         GreenMode.SettingChanged += (_, _) =>
         {
-            ArchipelagoConsole.LogMessage("Challenge me in Green Mode");
+            // The killfeed, not the chat: this is the mod talking, not the Archipelago room
+            Killfeed.Write("Challenge me in Green Mode");
 
-            // Toggling mid-match should be visible now rather than at the next spawn -
-            // the Awake patch only ever catches players that have yet to be created.
+            // makes this change visible mid match
             GreenModeTint.RefreshAll();
         };
 
@@ -196,33 +150,33 @@ internal static class ArchipelagoMenu
     /// screen on the back of the Roulette entry <see cref="CreateConfigs"/> binds. If that
     /// entry ever goes away, the login UI silently goes with it.
     /// </remarks>
-    private static void Build(OptionListContext c)
+    private static void Build(OptionListContext optionListContext)
     {
         ArchipelagoData data = ArchipelagoClient.ServerData;
 
-        c.InsertHeader(0, Section);
+        optionListContext.InsertHeader(0, Section);
 
-        StringValueController host = c.InsertStringInput(1, "Host",
+        StringValueController host = optionListContext.InsertStringInput(1, "Host",
             () => data.Uri,
             value => data.Uri = value);
-        Describe(c, host, "Host",
+        Describe(optionListContext, host, "Host",
             "The Archipelago server to connect to, as host:port — for example " +
             "archipelago.gg:38281, or localhost for a room hosted on this machine.");
 
-        StringValueController playerName = c.InsertStringInput(2, "Player Name",
+        StringValueController playerName = optionListContext.InsertStringInput(2, "Player Name",
             () => data.SlotName,
             value => data.SlotName = value);
-        Describe(c, playerName, "Player Name",
+        Describe(optionListContext, playerName, "Player Name",
             "The slot name to log in as. This has to match the slot in the room's YAML.");
 
         // ArchipelagoData leaves Password null until something sets it, and the input field
         // is handed this string directly - unlike Uri and SlotName, which its constructor
         // fills in. Null-coalesced here rather than defaulted on the data object, because null
         // is what the Archipelago client wants to mean "no password".
-        StringValueController password = c.InsertStringInput(3, "Password",
+        StringValueController password = optionListContext.InsertStringInput(3, "Password",
             () => data.Password ?? "",
             value => data.Password = value);
-        Describe(c, password, "Password",
+        Describe(optionListContext, password, "Password",
             "The room password. Leave blank if the room has none. Kept in memory for this " +
             "session only — it is never written to the config file.");
 
@@ -237,12 +191,12 @@ internal static class ArchipelagoMenu
 
         // Empty nameText makes the button fill the line, which is what the label already says.
         // Note PrependButton is unusable — in this version of Mod Menu it calls itself.
-        ButtonDummy connect = c.InsertButton(4, "", "Connect", Connect);
-        connect.OnItemHovered += () => c.SetInfoPanelContents("Connect", Section,
+        ButtonDummy connect = optionListContext.InsertButton(4, "", "Connect", Connect);
+        connect.OnItemHovered += () => optionListContext.SetInfoPanelContents("Connect", Section,
             $"Connect to the room with the details above.\n\nStatus: {StatusLine()}");
 
-        ButtonDummy disconnect = c.InsertButton(5, "", "Disconnect", Disconnect);
-        disconnect.OnItemHovered += () => c.SetInfoPanelContents("Disconnect", Section,
+        ButtonDummy disconnect = optionListContext.InsertButton(5, "", "Disconnect", Disconnect);
+        disconnect.OnItemHovered += () => optionListContext.SetInfoPanelContents("Disconnect", Section,
             $"Close the connection to the room.\n\nStatus: {StatusLine()}");
     }
 
