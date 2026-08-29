@@ -188,11 +188,11 @@ public class Plugin : BaseUnityPlugin
             // target costs only the kill-feed detail it would have provided.
             try
             {
-                KillDetectScopes.Install(harmony);
+                SuicideScopes.Install(harmony);
             }
             catch (Exception error)
             {
-                BepinLogger.LogError($"Failed to install kill-detection scopes: {error}");
+                BepinLogger.LogError($"Failed to install suicide-detection scopes: {error}");
             }
 
             // Must be a GameObject we own; this plugin component is destroyed on
