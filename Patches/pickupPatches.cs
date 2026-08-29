@@ -12,221 +12,8 @@ using UnityEngine;
 
 namespace Straftapelago.Finnegan_McD.org.Patches;
 
-// The LOCAL player's roulette pools, accessible from any patch class.
-//
-// This is one player's unlocks and nothing else. The roll happens on the peer that owns the
-// player who grabbed the Roulette Item (see GrabPatches), and only the single chosen prefab
-// ever crosses the wire — no peer is ever told what another peer's pool contains. That is
-// why one static pair of lists is still enough here: a process only ever tracks the unlocks
-// of the player sitting in front of it.
-public static class RouletteState
-{
-    public static List<GameObject> obtained_Items = new();
-    public static List<GameObject> unowned_items = new();
-
-    // The starter unlocks from Design_Doc.txt: a pistol plus the stun weapons. Matched
-    // case-insensitively against SpawnerManager.NameToWeaponDict, because the Resources
-    // paths are lowercased ("randomweapons/glock") while that dictionary is keyed on each
-    // prefab's own GameObject.name, whose casing this mod does not control.
-    private static readonly string[] StarterWeapons = { "glock", "taser", "stungrenade", "stunmine" };
-
-    private static bool initialized;
-    private static Dictionary<string, GameObject> nameLookup;
-
-    /// <summary>
-    /// Builds the pool once and then never again. This is all PlayerPickup.Awake() is
-    /// allowed to call: Awake() fires for every player object every round, so calling
-    /// Reset() from there wiped the pool mid-match, repeatedly, which is why a roll never
-    /// had more than the one starter weapon to choose between.
-    /// </summary>
-    public static void EnsureInitialized()
-    {
-        if (initialized) return;
-        Reset();
-    }
-
-    /// <summary>
-    /// Full rebuild, every call — unlike EnsureInitialized this always does the work.
-    /// Only the O debug key and the first EnsureInitialized() reach it.
-    /// </summary>
-    public static void Reset()
-    {
-        SpawnerManager.PopulateAllWeapons();
-        GameObject[] allWeapons = SpawnerManager.AllWeapons;
-
-        obtained_Items.Clear();
-        unowned_items.Clear();
-        nameLookup = null;
-
-        if (allWeapons != null)
-        {
-            foreach (GameObject weapon in allWeapons)
-            {
-                // A null here would later read as a "roll" that silently produces nothing,
-                // which looks exactly like a skewed distribution. Keep them out entirely.
-                if (weapon != null) unowned_items.Add(weapon);
-            }
-        }
-
-        initialized = true;
-        SeedStarters();
-
-        DiagLog.Log("RouletteState.Reset",
-            $"{DiagLog.NetRoles()} AllWeapons={(allWeapons == null ? "NULL" : allWeapons.Length.ToString())} " +
-            $"unowned={unowned_items.Count} obtained={obtained_Items.Count}");
-        LogPool();
-    }
-
-    /// <summary>
-    /// Seeds the starting unlocks by NAME. This replaces a hardcoded `unowned_items[30]`,
-    /// which depended on Resources.LoadAll ordering that Unity does not guarantee and threw
-    /// outright on a short list — and a throw here is not survivable, because Reset() is
-    /// reached from a Harmony prefix on PlayerPickup.Awake(), which FishNet generates as
-    ///     NetworkInitialize___Early(); Awake___UserLogic(); NetworkInitialize__Late();
-    /// so throwing skips NetworkInitialize___Early() and that PlayerPickup never registers
-    /// its SyncVars (crash-investigation candidate A2). Nothing below indexes unguarded.
-    /// </summary>
-    private static void SeedStarters()
-    {
-        foreach (string starter in StarterWeapons)
-        {
-            if (!GrantByName(starter))
-            {
-                Plugin.BepinLogger.LogWarning(
-                    $"[RouletteState] starter weapon '{starter}' did not resolve through " +
-                    "SpawnerManager.NameToWeaponDict; skipping it.");
-            }
-        }
-
-        if (obtained_Items.Count == 0 && unowned_items.Count > 0)
-        {
-            Plugin.BepinLogger.LogWarning(
-                "[RouletteState] no starter weapon resolved by name; falling back to the first " +
-                "entry in the weapon list so the pool is never empty.");
-            Grant(unowned_items[0]);
-        }
-    }
-
-    /// <summary>The single mutation point for the pool. Also the seam for a future Archipelago hook.</summary>
-    public static bool Grant(GameObject weapon)
-    {
-        if (weapon == null) return false;
-
-        // A duplicate would give that weapon two entries and therefore double its odds,
-        // which is exactly the "equal chance" guarantee this needs to hold.
-        if (obtained_Items.Contains(weapon)) return false;
-
-        unowned_items.Remove(weapon);
-        obtained_Items.Add(weapon);
-        LogPool();
-        return true;
-    }
-
-    /// <summary>Name-keyed grant — what an Archipelago item receipt will eventually call.</summary>
-    public static bool GrantByName(string weaponName)
-    {
-        GameObject weapon = Lookup(weaponName);
-        return weapon != null && Grant(weapon);
-    }
-
-    /// <summary>Case-insensitive lookup over the game's own name-to-prefab dictionary.</summary>
-    public static GameObject Lookup(string weaponName)
-    {
-        if (string.IsNullOrEmpty(weaponName)) return null;
-
-        if (nameLookup == null)
-        {
-            Dictionary<string, GameObject> source = SpawnerManager.NameToWeaponDict;
-            if (source == null) return null;
-
-            nameLookup = new Dictionary<string, GameObject>(StringComparer.OrdinalIgnoreCase);
-            foreach (KeyValuePair<string, GameObject> pair in source)
-            {
-                if (pair.Key != null && pair.Value != null) nameLookup[pair.Key] = pair.Value;
-            }
-        }
-
-        return nameLookup.TryGetValue(weaponName, out GameObject weapon) ? weapon : null;
-    }
-
-    /// <summary>
-    /// The equal-chance guarantee. Random.Range(int, int) is max-exclusive and uniform, so
-    /// the only ways the draw could be biased are a duplicate entry (blocked in Grant) or a
-    /// destroyed entry that produces a no-op roll — hence the compaction pass first, which
-    /// reports what it removed rather than hiding it.
-    /// </summary>
-    public static GameObject Roll(int rollId)
-    {
-        EnsureInitialized();
-
-        int compactedNulls = obtained_Items.RemoveAll(item => item == null);
-        int poolCount = obtained_Items.Count;
-        if (poolCount == 0)
-        {
-            DiagLog.RR(rollId, "roll", $"poolCount=0 compactedNulls={compactedNulls} — nothing to roll");
-            return null;
-        }
-
-        int index = UnityEngine.Random.Range(0, poolCount);
-        GameObject prefab = obtained_Items[index];
-        NetworkObject nob = prefab.GetComponent<NetworkObject>();
-
-        // prefabId/collectionId are logged here AND on the server's spawn so the two can be
-        // diffed across the two machines' logs. That comparison is the only decisive test
-        // for whether the peers' SpawnablePrefabs tables agree, and it cannot be
-        // reconstructed after the fact.
-        DiagLog.RR(rollId, "roll",
-            $"poolCount={poolCount} index={index} prefab={prefab.name} " +
-            $"prefabId={(nob == null ? "NO-NETWORKOBJECT" : nob.PrefabId.ToString())} " +
-            $"collectionId={(nob == null ? "n/a" : nob.SpawnableCollectionId.ToString())} " +
-            $"compactedNulls={compactedNulls}");
-
-        return prefab;
-    }
-
-    /// <summary>
-    /// Debug self-test behind the K key: draws many times and reports the spread, so
-    /// "every obtained weapon has an equal chance" is a number in the log rather than a
-    /// claim about the code.
-    /// </summary>
-    public static void SelfTest(int iterations)
-    {
-        int poolCount = obtained_Items.Count;
-        if (poolCount == 0)
-        {
-            Plugin.BepinLogger.LogInfo("[RouletteState] self-test skipped: pool is empty");
-            return;
-        }
-
-        int[] histogram = new int[poolCount];
-        for (int i = 0; i < iterations; i++) histogram[UnityEngine.Random.Range(0, poolCount)]++;
-
-        double expected = (double)iterations / poolCount;
-        double worstDeviation = 0d;
-        var report = new System.Text.StringBuilder();
-        for (int i = 0; i < poolCount; i++)
-        {
-            double deviation = Math.Abs(histogram[i] - expected) / expected * 100d;
-            if (deviation > worstDeviation) worstDeviation = deviation;
-            report.AppendLine($"  [{i}] {(obtained_Items[i] == null ? "null" : obtained_Items[i].name)}: " +
-                $"{histogram[i]} ({deviation:F2}% off expected)");
-        }
-
-        Plugin.BepinLogger.LogInfo(
-            $"[RouletteState] uniformity self-test: {iterations} draws over {poolCount} weapons, " +
-            $"expected {expected:F1} each, worst deviation {worstDeviation:F2}%{Environment.NewLine}{report}");
-    }
-
-    /// <summary>Numbered dump of the local player's unlocks. Called on every change and every roll.</summary>
-    public static void LogPool()
-    {
-        string obtainedList = string.Join(Environment.NewLine,
-            obtained_Items.Select((item, i) => $"  [{i}] {(item == null ? "null" : item.name)}"));
-        Plugin.BepinLogger.LogInfo(
-            $"obtained_Items ({obtained_Items.Count} total, {unowned_items.Count} still locked):" +
-            $"{Environment.NewLine}{obtainedList}");
-    }
-}
+// The roulette pools moved to rouletteState.cs, where RouletteState is now a normal class
+// with one instance owned by Plugin (Plugin.RouletteState) rather than a static class.
 
 /// <summary>
 /// One-slot latch for a roll that has been sent to the server and is waiting on the
@@ -448,7 +235,7 @@ public class GrabPatches
             return;
         }
 
-        GameObject prefab = RouletteState.Roll(rollId);
+        GameObject prefab = Plugin.RouletteState.Roll(rollId);
         if (prefab == null)
         {
             Plugin.BepinLogger.LogError(
@@ -843,12 +630,12 @@ public class PlayerPickupAwakePatch
         // mid-match, repeatedly, which is why a roll never had more than the one starter
         // weapon to pick between.
         Stopwatch sw = Stopwatch.StartNew();
-        RouletteState.EnsureInitialized();
+        Plugin.RouletteState.EnsureInitialized();
         sw.Stop();
 
         DiagLog.Log("PlayerPickup.Awake",
             $"RouletteState.EnsureInitialized() took {sw.Elapsed.TotalMilliseconds:F2}ms " +
-            $"obtained={RouletteState.obtained_Items.Count} " +
+            $"obtained={Plugin.RouletteState.obtained_Items.Count} " +
             $"obj={__instance.gameObject.name} {DiagLog.NetRoles()}");
     }
 }
@@ -865,27 +652,37 @@ public class PlayerPickupUpdatePatch
         {
             PendingRoll.CheckTimeout();
 
+            RouletteState roulette = Plugin.RouletteState;
+
             if (Input.GetKeyDown(KeyCode.O))
             {
-                RouletteState.Reset();
-                Plugin.BepinLogger.LogInfo($"Reset roulette item lists. unowned_items: {RouletteState.unowned_items.Count}, obtained_Items: {RouletteState.obtained_Items.Count}");
+                roulette.Reset();
+                Plugin.BepinLogger.LogInfo($"Reset roulette item lists. unowned_items: {roulette.unowned_items.Count}, obtained_Items: {roulette.obtained_Items.Count}, hasKill_Items: {roulette.hasKill_Items.Count}");
             }
 
-            if (Input.GetKeyDown(KeyCode.P) && RouletteState.unowned_items.Count > 0)
+            if (Input.GetKeyDown(KeyCode.P) && roulette.unowned_items.Count > 0)
             {
-                int randomIndex = UnityEngine.Random.Range(0, RouletteState.unowned_items.Count);
-                GameObject randomItem = RouletteState.unowned_items[randomIndex];
-                if (RouletteState.Grant(randomItem))
+                int randomIndex = UnityEngine.Random.Range(0, roulette.unowned_items.Count);
+                GameObject randomItem = roulette.unowned_items[randomIndex];
+                if (roulette.Grant(randomItem))
                 {
-                    Plugin.BepinLogger.LogInfo($"Added random item {randomItem.name} to obtained_Items. Remaining unowned_items: {RouletteState.unowned_items.Count}");
+                    Plugin.BepinLogger.LogInfo($"Added random item {randomItem.name} to obtained_Items. Remaining unowned_items: {roulette.unowned_items.Count}");
                 }
             }
 
-            // Proves the "every obtained weapon has an equal chance" requirement as a number
-            // in the log rather than as a claim about the code.
+            // Unlocks everything at once, which is what makes the unobtainable-pickup rule
+            // testable without playing far enough to earn the weapons.
+            if (Input.GetKeyDown(KeyCode.I))
+            {
+                int moved = roulette.GrantAllUnowned();
+                Plugin.BepinLogger.LogInfo($"Moved {moved} weapon(s) from unowned_items to obtained_Items. obtained_Items: {roulette.obtained_Items.Count}, unowned_items: {roulette.unowned_items.Count}");
+            }
+
+            // Proves the "New Weapon Chance is honoured, and the draw inside each list is
+            // fair" requirement as a number in the log rather than as a claim about the code.
             if (Input.GetKeyDown(KeyCode.K))
             {
-                RouletteState.SelfTest(100000);
+                roulette.SelfTest(100000);
             }
         }
 
@@ -1048,6 +845,94 @@ public class RightHandPickupPatch
         //Plugin.BepinLogger.LogInfo("Picked up Roulette Item");
 
         return false;
+    }
+}
+
+// Locked weapons cannot be taken off the floor.
+//
+// A weapon in unowned_items is one this player has not unlocked, so the only legitimate way
+// to get it is a roulette roll. Both patches below fail OPEN: anything RouletteState cannot
+// match to a pool weapon (the Roulette Item itself, an Aboubi, a Pig Held Item) behaves
+// exactly as it does in vanilla.
+
+/// <summary>
+/// Blocks the interact key on a weapon the player has not unlocked.
+/// </summary>
+/// <remarks>
+/// HandleInteraction is the single entry point for the interact key, and it is the only safe
+/// place to refuse. Its two-handed branch runs
+///     RightHandDrop(); LeftHandDrop(); RightHandPickup();
+/// so blocking further down - in RightHandPickup/LeftHandPickup - would empty both of the
+/// player's hands and then hand back nothing.
+///
+/// The cost of stopping this early is that the currentEnvironmentInteractable branch is
+/// skipped for that frame too, so an environment interactable cannot be used while a locked
+/// weapon is focused. Focus is a raycast, so the two rarely coincide.
+///
+/// The vanilla parameter (an InputAction.CallbackContext) is omitted; Harmony only injects
+/// the arguments a patch actually asks for.
+/// </remarks>
+[HarmonyPatch(typeof(PlayerPickup), "HandleInteraction")]
+public class UnobtainableInteractionPatch
+{
+    static bool Prefix(PlayerPickup __instance)
+    {
+        try
+        {
+            // Runs for every PlayerPickup on this peer; only the local player's input is
+            // this player's to refuse.
+            if (!__instance.IsOwner) return true;
+
+            RouletteState roulette = Plugin.RouletteState;
+            if (roulette == null) return true;
+
+            Interactable focused = Traverse.Create(__instance)
+                .Field("currentInteractable").GetValue<Interactable>();
+            if (focused == null) return true;
+
+            return !roulette.IsUnobtainable(focused.GetComponent<ItemBehaviour>());
+        }
+        catch (Exception error)
+        {
+            // Never let a throw here cost the player their interact key entirely.
+            Plugin.BepinLogger.LogError($"[Unobtainable] HandleInteraction prefix failed: {error}");
+            return true;
+        }
+    }
+}
+
+/// <summary>
+/// Says so on the look-at popup, replacing the interact-key prompt.
+/// </summary>
+/// <remarks>
+/// Vanilla OnFocus sets grabPopup.text to
+///     weaponName.ToLower() + " [" + PauseManager.Instance.InteractPromptLetter.ToLower() + "]"
+/// and that prompt is a lie on a weapon that cannot be taken, so the whole string is rebuilt
+/// rather than appended to. Rebuilding from weaponName (instead of doing string surgery on
+/// vanilla's output) keeps this correct if the prompt or its formatting ever changes.
+/// </remarks>
+[HarmonyPatch(typeof(ItemBehaviour), "OnFocus")]
+public class UnobtainableFocusPatch
+{
+    static void Postfix(ItemBehaviour __instance)
+    {
+        try
+        {
+            RouletteState roulette = Plugin.RouletteState;
+            if (roulette == null || !roulette.IsUnobtainable(__instance)) return;
+
+            // PauseManager.Instance is null-checked rather than assumed - HUDTween's own
+            // null-dereference of that singleton is one of the open crash candidates, so it
+            // is demonstrably not always there.
+            PauseManager pauseManager = PauseManager.Instance;
+            if (pauseManager == null || pauseManager.grabPopup == null) return;
+
+            pauseManager.grabPopup.text = $"{__instance.weaponName.ToLower()} - Unobtainable";
+        }
+        catch (Exception error)
+        {
+            Plugin.BepinLogger.LogError($"[Unobtainable] OnFocus postfix failed: {error}");
+        }
     }
 }
 

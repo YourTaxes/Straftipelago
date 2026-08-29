@@ -107,20 +107,52 @@ public class KillDetectPatch
             // this a non-owning peer could report someone else's prop kill.
             if (__instance is PhysicsProp prop && !prop.IsOwner) return;
 
+            // Resolved once and used twice: the pool name is what RouletteState
+            // matches on, the decorated one is what the player reads.
+            string poolName = ResolvePoolName(__instance);
+
             // True only when the victim is the local player. Vanilla already
             // routes self-hits away from these methods for 14 of the 16
-            // emitters; Bubble and PhysicsProp are the two that do not.
+            // emitters; Bubble and PhysicsProp are the two that do not. A
+            // self-kill earns no Archipelago check, which is why the credit
+            // below sits after this return rather than before it.
             if (enemyHealth.IsOwner)
             {
-                KillFeed.WriteSelfKill(ResolveWeaponName(__instance));
+                KillFeed.WriteSelfKill(Decorate(__instance, poolName, true));
                 return;
             }
 
-            KillFeed.WriteKill(ResolveWeaponName(__instance));
+            KillFeed.WriteKill(Decorate(__instance, poolName, true));
+            CreditKill(poolName);
         }
         catch (Exception error)
         {
             Plugin.BepinLogger.LogError($"[KillDetect] Postfix failed for {__instance?.GetType().Name}: {error}");
+        }
+    }
+
+    /// <summary>
+    /// Tells the roulette pools a kill happened with this weapon. The first kill
+    /// with an unlocked weapon is what earns an Archipelago check; every later one
+    /// is a no-op inside RecordKill.
+    /// </summary>
+    /// <remarks>
+    /// Called from the kill paths only, never from a WriteSelfKill path - a
+    /// suicide does not count as a kill. Every caller is already on the killer's
+    /// own machine, which is what makes this the local player's progress.
+    /// </remarks>
+    internal static void CreditKill(string poolWeaponName)
+    {
+        try
+        {
+            if (poolWeaponName == null) return;
+            Plugin.RouletteState?.RecordKill(poolWeaponName);
+        }
+        catch (Exception error)
+        {
+            // The kill itself is vanilla's business and has already happened;
+            // failing to record it must not disturb that.
+            Plugin.BepinLogger.LogError($"[KillDetect] Could not credit a kill with '{poolWeaponName}': {error}");
         }
     }
 
@@ -147,11 +179,32 @@ public class KillDetectPatch
     {
         if (emitter == null) return allowGenericName ? "something" : null;
 
+        return Decorate(emitter, ResolvePoolName(emitter), allowGenericName);
+    }
+
+    /// <summary>
+    /// The undecorated name, exactly as the game itself carries it, or null when the
+    /// emitter has none. This is what RouletteState matches its pools against.
+    /// </summary>
+    /// <remarks>
+    /// Kept separate from <see cref="ResolveWeaponName"/> because the display
+    /// decoration below would break that match: a Bubble kill reads
+    /// "DualLauncher (Bublee)" on screen, and no weapon prefab is called that.
+    /// Split rather than called twice so one kill still costs one scan.
+    /// </remarks>
+    internal static string ResolvePoolName(object emitter)
+    {
+        if (emitter == null) return null;
+
         List<string> trail = new List<string>();
         string name = ScanForName(emitter, 0, trail);
 
         Diagnose(emitter, name, trail);
+        return name;
+    }
 
+    static string Decorate(object emitter, string name, bool allowGenericName)
+    {
         if (name != null)
         {
             // Obus and Bubble are both spawned by the same DualLauncher and
@@ -491,6 +544,10 @@ public class HandGrenadeKillPatch
             if (weaponName == null) return;
 
             KillFeed.WriteKill(weaponName);
+
+            // Undecorated already - the Bublee suffix is the only decoration there
+            // is, and a hand grenade is never a Bubble.
+            KillDetectPatch.CreditKill(weaponName);
         }
         catch (Exception error)
         {
@@ -519,9 +576,13 @@ public class HandGrenadeTwoExplosionPatch
 
             // Self and enemy latch independently, so one grenade that kills an
             // enemy and the thrower reports both - a kill and a no-credit line.
+            // Only the enemy latch credits the pools; the self latch below is a
+            // suicide and earns nothing.
             if (!__state[1] && Latch(__instance, "touched2"))
             {
-                KillFeed.WriteKill(KillDetectPatch.ResolveWeaponName(__instance));
+                string weaponName = KillDetectPatch.ResolveWeaponName(__instance);
+                KillFeed.WriteKill(weaponName);
+                KillDetectPatch.CreditKill(weaponName);
             }
 
             if (!__state[0] && Latch(__instance, "touched"))
@@ -547,8 +608,9 @@ public class HandGrenadeTwoExplosionPatch
 internal static class KillFeed
 {
     // Every emitter reports on the killer's own machine, so the local player is
-    // always the subject of the line.
-    static string LocalPlayerName => ClientInstance.Instance?.PlayerName ?? "Player";
+    // always the subject of the line. Internal because LocationSender writes its
+    // first-kill line in the same voice and should not read this twice over.
+    internal static string LocalPlayerName => ClientInstance.Instance?.PlayerName ?? "Player";
 
     internal static void WriteKill(string weaponName) =>
         Write("KillDetect", $"{LocalPlayerName} got a kill with {weaponName}");

@@ -164,6 +164,12 @@ public class ArchipelagoClient
 
         ServerData.Index++;
 
+        // ArchipelagoConsole, not KillFeed: this callback runs on the client's websocket
+        // thread, and KillFeed.Write instantiates a chat line through MatchLogs straight
+        // away - a Unity API call off the main thread. LogMessage queues instead, and
+        // ArchipelagoOverlay.Update drains it on the main thread. It is also where the rest
+        // of this class already reports, because a received item is the room talking.
+        ArchipelagoConsole.LogMessage($"RECIEVED {receivedItem} FROM SERVER");
         // TODO reward the item here
         // if items can be received while in an invalid state for actually handling them, they can be placed in a local
         // queue/collection to be handled later

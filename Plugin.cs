@@ -52,6 +52,15 @@ public class Plugin : BaseUnityPlugin
     public static ArchipelagoClient ArchipelagoClient;
     public static GameObject RouletteItemPrefab;
 
+    // The local player's roulette pools. Created once in Awake and never replaced, so every
+    // patch that needs it - pickupPatches for the roll and the pickup rules, killDetectPatches
+    // for the first-kill checks - reads it from here.
+    //
+    // A plain C# object, not a MonoBehaviour: a UnityEngine.Object would need
+    // DontDestroyOnLoad to survive a scene change, while this is simply never collected while
+    // this static holds it. It has no per-frame work, so a component would buy nothing.
+    public static RouletteState RouletteState;
+
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr GetStdHandle(int nStdHandle);
 
@@ -113,6 +122,19 @@ public class Plugin : BaseUnityPlugin
             catch (Exception e)
             {
                 BepinLogger.LogError($"Failed to register the Mod Menu page: {e}");
+            }
+
+            // After the config (Roll() reads New Weapon Chance) and before PatchAll, so no
+            // patch can ever observe this as null. The constructor only allocates the lists -
+            // the weapons themselves are filled in lazily on the first PlayerPickup.Awake,
+            // because SpawnerManager is not up this early. See RouletteState.EnsureInitialized.
+            try
+            {
+                RouletteState = new RouletteState();
+            }
+            catch (Exception e)
+            {
+                BepinLogger.LogError($"Failed to create the roulette state: {e}");
             }
 
             using (Stream stream = typeof(Plugin).Assembly.GetManifestResourceStream(

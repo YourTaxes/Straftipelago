@@ -104,6 +104,7 @@ is not active".
 - [ ] `Plugin.cs` reads the embedded asset bundle with an inexact
       `stream.Read(data, 0, data.Length)` that ignores the return value. Works
       today; a short read would corrupt the bundle. Low priority.
+- [ ] Make all vending machines produce roulette items.
 
 ---
 
@@ -248,9 +249,11 @@ not fix.
   from `CreateMatchMakingKey()` reading assembly names; the only consequence is
   being unable to join vanilla lobbies, which is intended given
   `[assembly: StraftatMod(isVanillaCompatible: false)]`.
-- The O, P and K debug keybinds live in the `PlayerPickup.Update` Harmony patch,
-  so they only respond in-game, not in the menu. Keeping them. O = full pool
-  reset, P = grant one random locked weapon, K = 100k-draw uniformity self-test.
+- The O, P, I and K debug keybinds live in the `PlayerPickup.Update` Harmony
+  patch, so they only respond in-game, not in the menu. Keeping them. O = full
+  pool reset, P = grant one random locked weapon, I = unlock every locked weapon
+  at once, K = 100k-draw distribution self-test (which now checks the New Weapon
+  Chance split as well as fairness within each list).
 - **Reading a roulette roll in the log.** Every step is tagged `[RR:<step> #<id>]`,
   so `grep '\[RR:'` (or `findstr /c:"[RR:"`) pulls the whole trace. The `#id` is
   what stitches a client's lines to the host's when two players roll at once.

@@ -31,6 +31,9 @@ internal static class ArchipelagoMenu
     // this config determines if 2 handed weapons are placed in the user's hand, or if they are placed on the ground
     public static ConfigEntry<bool> RolledTwoHandedWeaponsOverride { get; private set; }
 
+    // how often a roulette roll produces a weapon the player has not got a kill with yet
+    public static ConfigEntry<int> NewWeaponChance { get; private set; }
+
     //determines if you accept the challenge
     public static ConfigEntry<bool> GreenMode { get; private set; }
 
@@ -111,7 +114,22 @@ internal static class ArchipelagoMenu
             "roulette was in the right hand and the left hand is empty, otherwise it is left " +
             "on the ground.\n\nOn: Anything held is dropped and the weapon is taken in both " +
             "hands, the same way picking a two-handed weapon up off the floor works.");
-        
+
+        // Bound immediately after the two-handed override so it sits directly below it in
+        // the Roulette section, in the .cfg and on the Mod Menu page alike.
+        //
+        // AcceptableValueRange is what makes Mod Menu draw this as a bounded slider rather
+        // than a free-text int, and it is also what stops a hand-edited .cfg putting a value
+        // outside 1-100 into the roll.
+        NewWeaponChance = config.Bind("Roulette", "New Weapon Chance",
+            50,
+            new ConfigDescription(
+                "The percent chance that a roulette roll gives you a weapon you have NOT got a " +
+                "kill with yet. The rest of the time it gives you one you already have a kill " +
+                "with - so at 40, four rolls in ten are new weapons and six are old ones.\n\n" +
+                "If either group is empty the roll comes from the other one regardless.",
+                new AcceptableValueRange<int>(1, 100)));
+
         GreenMode = config.Bind("Green Mode", "Green Mode", false,
             "Challenge me in Green Mode.");
 

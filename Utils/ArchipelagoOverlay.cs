@@ -138,7 +138,16 @@ internal class ArchipelagoOverlay : MonoBehaviour
         if (PauseManager.Instance == null || !PauseManager.Instance.pause) return;
         if (InSettingsMenu()) return;
 
-        List<GameObject> obtained = RouletteState.obtained_Items;
+        RouletteState roulette = Plugin.RouletteState;
+        if (roulette == null) return;
+
+        // One list, in progress order: weapons still waiting for their first kill at the
+        // top, the ones that already earned their check at the bottom with a tick. Showing
+        // both is what stops a weapon appearing to vanish from the panel the moment it is
+        // used - it has not been lost, it has been completed.
+        var obtained = new List<GameObject>(roulette.obtained_Items);
+        int firstKillEarned = obtained.Count;
+        obtained.AddRange(roulette.hasKill_Items);
 
         // Sized off the screen like ArchipelagoConsole does, so it scales with resolution
         // instead of assuming one.
@@ -190,6 +199,8 @@ internal class ArchipelagoOverlay : MonoBehaviour
 
         GUI.Label(new Rect(firstColumnLeft, panelTop + entryHeight * 0.25f,
             panelWidth - panelPadding * 2f, headerHeight),
+            // No "✓ = kill earned" legend: the header Rect is only as wide as the packed
+            // columns, so with a single column that text clips rather than explains.
             $"Unlocked weapons ({obtained.Count})", style);
 
         for (int i = 0; i < entryCount; i++)
@@ -207,7 +218,11 @@ internal class ArchipelagoOverlay : MonoBehaviour
             else
             {
                 GameObject weapon = obtained[i];
-                text = $"{i + 1}. {(weapon == null ? "<missing>" : weapon.name)}";
+
+                // U+2713. If a future Unity build's default GUI font does not carry it the
+                // entry shows a box, in which case swap this for a plain "*".
+                string killMark = i >= firstKillEarned ? " ✓" : "";
+                text = $"{i + 1}. {(weapon == null ? "<missing>" : weapon.name)}{killMark}";
             }
 
             GUI.Label(new Rect(entryLeft, entryTop, entryWidth, entryHeight), text, style);

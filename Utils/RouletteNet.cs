@@ -108,7 +108,10 @@ internal class RouletteNet
             }
 
             PlayerPickup pp = ResolvePickup(info.SenderSteamID.m_SteamID, out string who);
-            GameObject prefab = RouletteState.Lookup(weaponName);
+            // Name resolution ONLY, never a pool-membership test: this is the host answering
+            // for someone else's roll, and the host's own lists say nothing about what that
+            // player has unlocked.
+            GameObject prefab = Plugin.RouletteState?.Lookup(weaponName);
             NetworkObject prefabNob = prefab == null ? null : prefab.GetComponent<NetworkObject>();
 
             // prefabId is logged here and on the requester's [RR:roll] line so the two can be
