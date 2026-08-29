@@ -177,7 +177,23 @@ public class Plugin : BaseUnityPlugin
                 BepinLogger.LogError($"Failed to register roulette RPCs with Mycelium: {e}");
             }
 
-            new Harmony(PluginGUID).PatchAll();
+            Harmony harmony = new Harmony(PluginGUID);
+            harmony.PatchAll();
+
+            // Separate from PatchAll, and guarded, because these targets are
+            // discovered by searching the game's IL rather than named in an
+            // attribute: there are dozens of them, and PatchAll is all-or-nothing
+            // - one method Harmony cannot patch would throw out of here and leave
+            // the whole mod half-loaded. Installed one at a time instead, so a bad
+            // target costs only the kill-feed detail it would have provided.
+            try
+            {
+                KillDetectScopes.Install(harmony);
+            }
+            catch (Exception error)
+            {
+                BepinLogger.LogError($"Failed to install kill-detection scopes: {error}");
+            }
 
             // Must be a GameObject we own; this plugin component is destroyed on
             // frame 0 along with BepInEx_Manager. See ArchipelagoOverlay.
