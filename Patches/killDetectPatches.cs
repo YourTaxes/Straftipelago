@@ -319,12 +319,9 @@ public class KillDetectPatch
     // from is literally called weaponName.
     static string InterpretUnnamedField(object value) => value is string ? null : Interpret(value);
 
-    // One line per emitter type per session, on the first kill or suicide it is
-    // involved in. A name resolved from an unexpected field is the failure this
-    // exists to catch: "Cube.016" looked like a weapon name in the kill feed and
-    // nothing in the message said which field produced it. The failure branch
-    // dumps the shape and the live values, which is what identifies the field to
-    // add to NameFields for an emitter this file does not know.
+    // One line per emitter type per session. A name resolved from an unexpected
+    // field is what this catches: "Cube.016" looked like a weapon name in the
+    // kill feed and nothing in the message said which field produced it.
     static readonly HashSet<Type> Diagnosed = new HashSet<Type>();
 
     static void Diagnose(object emitter, string name, List<string> trail)
@@ -332,49 +329,9 @@ public class KillDetectPatch
         Type type = emitter.GetType();
         if (!Diagnosed.Add(type)) return;
 
-        if (name != null)
-        {
-            Plugin.BepinLogger.LogInfo(
-                $"[KillDetect] {type.FullName} named \"{name}\" via {string.Join(" -> ", trail.ToArray())}");
-            return;
-        }
-
-        Plugin.BepinLogger.LogWarning(
-            $"[KillDetect] {type.FullName} carries no weapon name. Fields: {DescribeFields(emitter)}");
-    }
-
-    // Only the fields that could plausibly carry a name. Dumping everything
-    // buried the one useful line under ninety AudioClips and Vector3s the first
-    // time this ran, so anything that is not a string or one of the game's own
-    // objects is left out.
-    internal static string DescribeFields(object emitter)
-    {
-        List<string> described = new List<string>();
-        foreach (FieldInfo field in InstanceFields(emitter.GetType()))
-        {
-            object value = ReadField(emitter, field);
-            if (!(value is string) && !IsGameObjectWorthFollowing(value)) continue;
-
-            described.Add($"{field.FieldType.Name} {field.Name} = {Describe(value)}");
-        }
-
-        return described.Count > 0 ? string.Join(", ", described.ToArray()) : "none";
-    }
-
-    // Unity object names are included because that is where a wrong-looking name
-    // tends to come from, and seeing it beside the field that holds it is the
-    // whole point of the dump.
-    static string Describe(object value)
-    {
-        switch (value)
-        {
-            case null: return "null";
-            case string text: return $"\"{text}\"";
-            case ItemBehaviour itemBehaviour: return $"ItemBehaviour weaponName=\"{itemBehaviour.weaponName}\"";
-            case UnityEngine.Object unityObject:
-                return unityObject == null ? "destroyed" : $"{value.GetType().Name} \"{unityObject.name}\"";
-            default: return value.GetType().Name;
-        }
+        Plugin.BepinLogger.LogInfo(name != null
+            ? $"[KillDetect] {type.Name} named \"{name}\" via {string.Join(" -> ", trail.ToArray())}"
+            : $"[KillDetect] {type.Name} carries no weapon name.");
     }
 
     // Used when no field yielded a name: an unset inspector field, or Obus and
@@ -473,16 +430,16 @@ internal static class SuicideSource
         string scopedName = HandGrenadeScope.ActiveWeapon;
         if (scopedName != null) return scopedName;
 
-        // An exact name off the instance beats everything below it.
+        // An exact name off the instance beats the generic one below it.
         string exact = FromEmitters(allowGenericName: false);
         if (exact != null) return exact;
 
-        // Then whatever last damaged the player, which is the only thing that
-        // knows about a weapon that killed on a delay rather than on the stack.
-        string damager = DamageSource.Recent();
-        if (damager != null) return damager;
+        // Then a damage volume the player is standing in, which is the only
+        // thing that names a weapon that killed on a delay - see AcidZones.
+        string standingIn = StandingIn();
+        if (standingIn != null) return standingIn;
 
-        // Only then the generic per-type name, which is the same word for every
+        // Then the generic per-type name, which is the same word for every
         // weapon that shares an emitter class and so is the weakest answer here.
         string generic = FromEmitters(allowGenericName: true);
         if (generic != null) return generic;
@@ -532,32 +489,20 @@ internal static class SuicideSource
         }
 
         string stack = emitters.Count > 0 ? string.Join(" <- ", emitters.ToArray()) : "none";
-        Plugin.BepinLogger.LogInfo(
-            $"[KillDetect] Suicide not attributed. Emitters: {stack}. Last damage: {DamageSource.Describe()}");
-
-        // The victim's own health component is the last place a weapon could
-        // still be recorded: the game names a killer in its own kill feed, so if
-        // it keeps that anywhere it keeps it here.
-        PlayerHealth health = LocalHealth();
-        if (health != null)
-        {
-            Plugin.BepinLogger.LogInfo($"[KillDetect] Victim PlayerHealth: {KillDetectPatch.DescribeFields(health)}");
-        }
+        Plugin.BepinLogger.LogInfo($"[KillDetect] Suicide not attributed. Emitters: {stack}.");
     }
 
-    static PlayerHealth LocalHealth()
+    // The suicide is reported on the dying player's own machine, so whatever
+    // reported it is a component on the player - FirstPersonController, for an
+    // acid death - and its transform is where the player is standing.
+    static string StandingIn()
     {
-        if (DamageSource.LastLocalVictim != null) return DamageSource.LastLocalVictim;
-
-        // Nothing has damaged the local player this session, so fall back to the
-        // component sitting on whatever reported the suicide - for an acid death
-        // that is FirstPersonController, on the same object as PlayerHealth.
         for (int index = Emitting.Count - 1; index >= 0; index--)
         {
-            if (!(Emitting[index] is Component component) || component == null) continue;
-
-            PlayerHealth health = component.GetComponent<PlayerHealth>();
-            if (health != null) return health;
+            if (Emitting[index] is Component component && component != null)
+            {
+                return AcidZones.At(component.transform.position);
+            }
         }
 
         return null;
@@ -730,176 +675,138 @@ internal static class CallerSearch
 }
 
 /// <summary>
-/// Remembers the last thing to damage the local player, for the deaths where
-/// nothing about the weapon is on the call stack by the time the player dies.
+/// Maps the lingering damage volume a weapon leaves behind back to that weapon.
 /// </summary>
 /*
-The Blister and Cyst acid is why this exists. It pools on the ground and ticks
-damage; a later tick is the one that kills, and by then the acid is not running
-at all. FirstPersonController notices the death and calls the suicide counter,
-and its fields - dumped in full once, which is how this was established - hold
-nothing that points back at the acid. So the weapon has to be remembered at the
-moment it dealt the damage instead of looked for at the moment of death.
+Every link in this chain is a field, and every one has been read off a live
+weapon: DualLauncher, whose ItemBehaviour.weaponName is "Cyst", holds
+PredictedProjectile _projectile "CystBullet", which holds GameObject objToSpawn
+"DF_Cyst_Zone" - the acid pool. The pool ticks damage and a later tick kills, so
+by then nothing about the weapon is on the call stack and FirstPersonController
+credits a plain suicide. The game does not know either: its own match log prints
+"commited suicide" with the weapon slot left unfilled.
 
-Two halves make that work. The caller scope records whose code is calling a
-PlayerHealth damage method, and the patch on the damage method itself promotes
-that instance to `source` only when the victim is the local player - otherwise
-acid burning someone else across the map would be blamed for your own fall a
-moment later.
+What is knowable is that the pool which killed you is the one you are standing
+in. So each weapon's volume prefab is recorded when the weapon is built, and at
+death the volumes actually touching the player are looked up by name. That is
+also what separates the Cyst from the Blister: same gun class, same projectile
+class, different volume prefab.
 */
-internal static class DamageSource
+internal static class AcidZones
 {
-    internal static readonly InstanceScope Dealing = new InstanceScope();
+    // Keyed by prefab name, which is what survives into the instance: a spawned
+    // "DF_Cyst_Zone" is named "DF_Cyst_Zone(Clone)".
+    static readonly Dictionary<string, string> Volumes =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-    static object source;
-    static float dealtAt = float.NegativeInfinity;
+    static readonly HashSet<string> Registered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-    // Tracked separately from the dealer: damage that lands on the local player
-    // with nothing on the caller scope means the entry points were found and do
-    // fire, but whatever called them was not patched. Damage that never lands at
-    // all means the entry points themselves are wrong. Those are opposite fixes,
-    // and only recording both tells them apart.
-    static PlayerHealth lastLocalVictim;
-    static float damagedAt = float.NegativeInfinity;
+    static readonly Assembly Game = typeof(Settings).Assembly;
 
-    // Long enough to span the tick that killed, short enough that surviving an
-    // acid pool and then falling to your death a second later is not blamed on
-    // the acid.
-    const float Window = 0.5f;
-
-    /// <summary>The local player's health component, once anything has damaged it.</summary>
-    internal static PlayerHealth LastLocalVictim => lastLocalVictim;
-
-    internal static void RecordIfLocal(PlayerHealth victim)
+    /// <summary>Records what a weapon leaves behind. Once per weapon name.</summary>
+    internal static void Register(ItemBehaviour item)
     {
-        if (victim == null || !victim.IsOwner) return;
+        string weapon = item == null ? null : item.weaponName;
+        if (string.IsNullOrWhiteSpace(weapon) || !Registered.Add(weapon)) return;
 
-        lastLocalVictim = victim;
-        damagedAt = Time.time;
-
-        object dealer = Dealing.Innermost;
-        if (dealer == null) return;
-
-        source = dealer;
-        dealtAt = Time.time;
-
-        // Once per type. What actually damages the local player is the whole
-        // question here, and a type that never appears in this line is a type
-        // this tracker never saw.
-        if (DealersSeen.Add(dealer.GetType()))
+        // Gun -> projectile -> volume is the whole chain, so two hops is all
+        // this walks. Reflection is fine here: it runs once per weapon name.
+        foreach (Component gun in item.GetComponents<Component>())
         {
-            Plugin.BepinLogger.LogInfo($"[KillDetect] Local damage dealt by {dealer.GetType().FullName}.");
-        }
-    }
-
-    static readonly HashSet<Type> DealersSeen = new HashSet<Type>();
-
-    /// <summary>Weapon name behind the recent damage, or null if there is none or it is stale.</summary>
-    internal static string Recent()
-    {
-        if (source == null || Time.time - dealtAt > Window) return null;
-
-        return KillDetectPatch.ResolveWeaponName(source, allowGenericName: false);
-    }
-
-    internal static string Describe()
-    {
-        if (source != null && Time.time - dealtAt <= Window)
-        {
-            return $"{source.GetType().Name} {Time.time - dealtAt:0.00}s ago";
-        }
-
-        if (Time.time - damagedAt <= Window)
-        {
-            return $"damage landed {Time.time - damagedAt:0.00}s ago but its caller was not scoped " +
-                   $"(entry points: {EntryPoints})";
-        }
-
-        return $"none, no damage seen at all (entry points: {EntryPoints})";
-    }
-
-    /// <summary>PlayerHealth's own damage entry points.</summary>
-    internal static readonly List<MethodBase> Methods = FindMethods();
-
-    // Declared after Methods so the field initializers run in that order.
-    static readonly string EntryPoints = Describe(Methods);
-
-    static List<MethodBase> FindMethods()
-    {
-        List<MethodBase> found = new List<MethodBase>();
-
-        try
-        {
-            foreach (MethodInfo method in typeof(PlayerHealth).GetMethods(CallerSearch.Declared))
+            foreach (Component projectile in Referenced<Component>(gun, false))
             {
-                if (method.IsAbstract || method.ContainsGenericParameters) continue;
+                foreach (GameObject volume in Referenced<GameObject>(projectile, true))
+                {
+                    // A damage volume has a collider. A muzzle flash or an
+                    // impact decal does not, and mapping one of those would let
+                    // standing near a cosmetic effect name a death.
+                    if (volume.GetComponentInChildren<Collider>() == null) continue;
+                    if (Volumes.ContainsKey(volume.name)) continue;
 
-                // FishNet generates RpcWriter___/RpcLogic___ twins for every
-                // networked method. Callers call the plain one, so the generated
-                // pair add nothing and are the riskier things to patch.
-                if (method.Name.IndexOf("___", StringComparison.Ordinal) >= 0) continue;
-
-                if (!NamesDamage(method.Name)) continue;
-
-                found.Add(method);
+                    Volumes[volume.name] = weapon;
+                    Plugin.BepinLogger.LogInfo($"[KillDetect] \"{weapon}\" leaves {volume.name} behind.");
+                }
             }
         }
-        catch (Exception error)
+    }
+
+    /// <summary>Weapon whose volume is touching this point, or null.</summary>
+    internal static string At(Vector3 position)
+    {
+        if (Volumes.Count == 0) return null;
+
+        // A volume that kills you is one you are inside, so the query only has
+        // to reach as far as the player's own body.
+        foreach (Collider touching in Physics.OverlapSphere(position, 1f, ~0, QueryTriggerInteraction.Collide))
         {
-            Plugin.BepinLogger.LogError($"[KillDetect] Could not find PlayerHealth's damage methods: {error}");
+            // The collider can sit on a child of the spawned volume, so walk up.
+            for (Transform part = touching == null ? null : touching.transform; part != null; part = part.parent)
+            {
+                if (Volumes.TryGetValue(Prefab(part.name), out string weapon)) return weapon;
+            }
         }
 
-        // Logged because this match is by name, which is exactly the fragile
-        // thing the rest of the file avoids - here there is no call graph to
-        // search from, so the log is what says a future build spelled it
-        // differently, with acid deaths going unattributed as the symptom.
-        string names = Describe(found);
-        if (found.Count > 0)
+        return null;
+    }
+
+    // Only the game's own classes, so the walk never wanders into Unity or
+    // FishNet. `hinted` narrows the second hop to the spawn field: without it
+    // every impact decal on a projectile would be considered.
+    static List<T> Referenced<T>(Component owner, bool hinted) where T : UnityEngine.Object
+    {
+        List<T> found = new List<T>();
+        if (owner == null || owner.GetType().Assembly != Game) return found;
+
+        for (Type type = owner.GetType(); type != null && type.Assembly == Game; type = type.BaseType)
         {
-            Plugin.BepinLogger.LogInfo($"[KillDetect] PlayerHealth damage entry points: {names}");
-        }
-        else
-        {
-            Plugin.BepinLogger.LogWarning(
-                "[KillDetect] No PlayerHealth damage entry points matched by name - nothing that kills on a delay " +
-                "will be named. PlayerHealth methods: " + AllMethodNames());
+            foreach (FieldInfo field in type.GetFields(CallerSearch.Declared))
+            {
+                if (!typeof(T).IsAssignableFrom(field.FieldType)) continue;
+                if (hinted && field.Name.IndexOf("spawn", StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+                T value = null;
+                try
+                {
+                    value = field.GetValue(owner) as T;
+                }
+                catch
+                {
+                    // An unassigned prefab reference can throw rather than
+                    // return null; either way there is nothing to record.
+                }
+
+                if (value != null) found.Add(value);
+            }
         }
 
         return found;
     }
 
-    // Only on the failure path, and only once: if the name match found nothing,
-    // the list of what is actually there is what says which name to match.
-    static string AllMethodNames()
+    static string Prefab(string name)
+    {
+        int clone = name.IndexOf("(Clone)", StringComparison.Ordinal);
+        return clone < 0 ? name : name.Substring(0, clone).TrimEnd();
+    }
+}
+
+/// <summary>
+/// Records each weapon's damage volume as the weapon is built. ItemBehaviour
+/// runs Start for every item, which is the earliest point one exists as a real
+/// object with its inspector references filled in.
+/// </summary>
+[HarmonyPatch(typeof(ItemBehaviour), "Start")]
+public class AcidZoneRegisterPatch
+{
+    static void Postfix(ItemBehaviour __instance)
     {
         try
         {
-            List<string> names = new List<string>();
-            foreach (MethodInfo method in typeof(PlayerHealth).GetMethods(CallerSearch.Declared))
-            {
-                if (method.Name.IndexOf("___", StringComparison.Ordinal) < 0) names.Add(method.Name);
-            }
-
-            return string.Join(", ", names.ToArray());
+            AcidZones.Register(__instance);
         }
         catch (Exception error)
         {
-            return $"could not be listed: {error.Message}";
+            Plugin.BepinLogger.LogError($"[KillDetect] Could not register {__instance?.weaponName}'s volume: {error}");
         }
-    }
-
-    static bool NamesDamage(string methodName) =>
-        methodName.IndexOf("damage", StringComparison.OrdinalIgnoreCase) >= 0 ||
-        methodName.IndexOf("hurt", StringComparison.OrdinalIgnoreCase) >= 0;
-
-    static string Describe(List<MethodBase> methods)
-    {
-        if (methods.Count == 0) return "none found";
-
-        List<string> names = new List<string>();
-        foreach (MethodBase method in methods) names.Add(method.Name);
-
-        return string.Join(", ", names.ToArray());
     }
 }
 
@@ -913,62 +820,30 @@ internal static class ScopeHooks
     internal static void EnterSuicideSource(object __instance) => SuicideSource.Emitting.Enter(__instance);
 
     internal static void ExitSuicideSource() => SuicideSource.Emitting.Exit();
-
-    internal static void EnterDamageSource(object __instance) => DamageSource.Dealing.Enter(__instance);
-
-    internal static void ExitDamageSource() => DamageSource.Dealing.Exit();
-
-    internal static void RecordDamage(PlayerHealth __instance) => DamageSource.RecordIfLocal(__instance);
 }
 
 /// <summary>
-/// Installs the two instance scopes and the damage recorder. Called from Plugin
-/// after PatchAll rather than by it: these targets come from an IL search and
-/// there are dozens of them, so each is patched inside its own try/catch instead
-/// of letting one unpatchable method abort the mod's whole initialization.
+/// Installs the emitter scope. Called from Plugin after PatchAll rather than by
+/// it: these targets come from an IL search and there are dozens of them, so
+/// each is patched inside its own try/catch instead of letting one unpatchable
+/// method abort the mod's whole initialization.
 /// </summary>
 internal static class KillDetectScopes
 {
     internal static void Install(Harmony harmony)
     {
         MethodInfo counter = AccessTools.Method(typeof(Settings), "IncreaseSuicidesAmount");
-        if (counter != null)
-        {
-            Scope(harmony,
-                CallerSearch.Of(new MethodBase[] { counter }, "the suicide counter"),
-                nameof(ScopeHooks.EnterSuicideSource),
-                nameof(ScopeHooks.ExitSuicideSource));
-        }
-        else
+        if (counter == null)
         {
             Plugin.BepinLogger.LogError(
                 "[KillDetect] Settings.IncreaseSuicidesAmount not found - suicides will not name a weapon.");
+            return;
         }
-
-        List<MethodBase> damageMethods = DamageSource.Methods;
 
         Scope(harmony,
-            CallerSearch.Of(damageMethods, "PlayerHealth's damage methods"),
-            nameof(ScopeHooks.EnterDamageSource),
-            nameof(ScopeHooks.ExitDamageSource));
-
-        // The damage methods themselves, which is where the recorded dealer is
-        // promoted to "what last damaged me" - and only for the local player.
-        int recording = 0;
-        foreach (MethodBase method in damageMethods)
-        {
-            try
-            {
-                harmony.Patch(method, postfix: Hook(nameof(ScopeHooks.RecordDamage)));
-                recording++;
-            }
-            catch (Exception error)
-            {
-                Plugin.BepinLogger.LogError($"[KillDetect] Could not patch {method.Name} to record damage: {error}");
-            }
-        }
-
-        Plugin.BepinLogger.LogInfo($"[KillDetect] Recording damage from {recording} PlayerHealth method(s).");
+            CallerSearch.Of(new MethodBase[] { counter }, "the suicide counter"),
+            nameof(ScopeHooks.EnterSuicideSource),
+            nameof(ScopeHooks.ExitSuicideSource));
     }
 
     // Prefix and finalizer, not prefix and postfix: a finalizer runs on the
