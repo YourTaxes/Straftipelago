@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using Newtonsoft.Json;
 
 namespace Straftapelago.Finnegan_McD.org.Archipelago;
@@ -95,6 +96,52 @@ public class ArchipelagoData
                 $"Could not read '{DeathLinkKey}' from slot data (got '{value}'); death link stays " +
                 $"off.{Environment.NewLine}{e}");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// one line per slot data entry, for printing into the Archipelago console once the login
+    /// that carried it has succeeded.
+    /// </summary>
+    /// <remarks>
+    /// Values are rendered back through Newtonsoft rather than with ToString, because slot data
+    /// is deserialized into object: a list arrives as a JArray and a nested table as a JObject,
+    /// and both of those print as their type name otherwise. Serializing shows what the room
+    /// actually sent, which is the whole point of printing it.
+    /// </remarks>
+    public IEnumerable<string> DescribeSlotData()
+    {
+        if (slotData == null || slotData.Count == 0)
+        {
+            yield return "Slot data: the room sent none.";
+            yield break;
+        }
+
+        yield return $"Slot data ({slotData.Count} entries):";
+
+        // Ordered so the same room prints the same list every connect; the dictionary comes off
+        // the wire in whatever order the server serialized it.
+        foreach (var entry in slotData.OrderBy(entry => entry.Key, StringComparer.Ordinal))
+            yield return $"    {entry.Key}: {DescribeValue(entry.Value)}";
+    }
+
+    /// <summary>
+    /// renders a single slot data value for <see cref="DescribeSlotData"/>
+    /// </summary>
+    private static string DescribeValue(object value)
+    {
+        if (value == null) return "null";
+
+        try
+        {
+            return JsonConvert.SerializeObject(value);
+        }
+        catch (Exception e)
+        {
+            // Printing slot data is diagnostic, so one unserializable value must not take the
+            // rest of the list - or the connect message it is printed after - down with it.
+            Plugin.BepinLogger.LogError($"Could not render a slot data value.{Environment.NewLine}{e}");
+            return value.ToString();
         }
     }
 

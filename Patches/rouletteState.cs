@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using FishNet.Object;
@@ -309,7 +309,50 @@ public class RouletteState
         hasKill_Items.Add(prefab);
         LogPool();
 
-        LocationSender.Send_Location(weaponName);
+        // The prefab's display name rather than the name the kill path happened to resolve:
+        // that one can be either namespace, and the room's locations are named after the
+        // weapons the way the game displays them.
+        LocationSender.Send_Location(DisplayNameOf(prefab));
+    }
+
+    /// <summary>
+    /// Moves a weapon into hasKill_Items whatever list it is in now, without caring whether
+    /// the player has ever held it. RecordKill's cheat twin, behind /ap_completecheck.
+    /// </summary>
+    /// <remarks>
+    /// Unlike RecordKill this does not send the check - the command does that itself, so it
+    /// can report to the player what the room said. It also accepts a locked weapon, which
+    /// RecordKill will not: a check granted by hand is the player saying the kill happened,
+    /// and refusing it because the weapon was never unlocked would make the command useless
+    /// for exactly the weapons it is most wanted for.
+    /// </remarks>
+    /// <returns>The pool weapon that was moved, or null when the name is not one.</returns>
+    public GameObject MarkKillEarned(string weaponName)
+    {
+        GameObject prefab = ResolveByAnyName(weaponName);
+        if (prefab == null) return null;
+
+        // Already earned: still a success for the caller, but nothing to move, and adding it
+        // again would give it two entries and double its odds in a roll.
+        if (hasKill_Items.Contains(prefab)) return prefab;
+
+        unowned_items.Remove(prefab);
+        obtained_Items.Remove(prefab);
+        hasKill_Items.Add(prefab);
+        LogPool();
+        return prefab;
+    }
+
+    /// <summary>
+    /// The name the game displays for a pool weapon (ItemBehaviour.weaponName), falling back
+    /// to the prefab name when the prefab carries no ItemBehaviour.
+    /// </summary>
+    public static string DisplayNameOf(GameObject weapon)
+    {
+        if (weapon == null) return null;
+
+        ItemBehaviour behaviour = weapon.GetComponent<ItemBehaviour>();
+        return string.IsNullOrEmpty(behaviour?.weaponName) ? weapon.name : behaviour.weaponName;
     }
 
     /// <summary>

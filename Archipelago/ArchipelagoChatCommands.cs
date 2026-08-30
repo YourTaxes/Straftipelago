@@ -1,7 +1,9 @@
-using System.Reflection;
+﻿using System.Reflection;
 using ChatCommands;
 using ChatCommands.Attributes;
+using Straftapelago.Finnegan_McD.org.Patches;
 using Straftapelago.Finnegan_McD.org.Utils;
+using UnityEngine;
 
 namespace Straftapelago.Finnegan_McD.org.Archipelago;
 
@@ -95,6 +97,76 @@ public static class ArchipelagoChatCommands
 
     [Command("ap_admin", "Run a server admin command. Quote the whole thing: /ap_admin '/status'")]
     public static void Admin(string command = "") => Send("admin", command);
+
+    /// <summary>
+    /// Completes a weapon's check by hand: the same thing the first kill with that weapon
+    /// does, without the kill.
+    /// </summary>
+    /// <remarks>
+    /// <para>Not a server command - it does not go through <see cref="Send"/>. The room's
+    /// !commands cannot mark a location checked; that is a LocationChecks packet, which is
+    /// what <see cref="LocationSender.Send_Location"/> sends.</para>
+    /// <para>The pool move happens first and stands even when the send fails, so the pause
+    /// screen's weapon list always shows what this machine believes. That is the honest
+    /// order: the local pools are this mod's own state, while the check is a request to a
+    /// room that may not be listening.</para>
+    /// </remarks>
+    [Command("ap_completecheck", "Mark a weapon's first-kill check as done. Quote multi-word names: /ap_completecheck 'Baseball Bat'")]
+    public static void CompleteCheck(string weapon = "")
+    {
+        string weaponName = weapon?.Trim();
+        if (string.IsNullOrEmpty(weaponName))
+        {
+            throw new CommandException("Name a weapon: /ap_completecheck 'Baseball Bat'");
+        }
+
+        RouletteState roulette = Plugin.RouletteState;
+        if (roulette == null)
+        {
+            throw new CommandException("The weapon pools do not exist yet.");
+        }
+
+        // The pools are populated the first time a player object comes up, not at startup, so
+        // this command is reachable from a main menu where they are still empty.
+        roulette.EnsureInitialized();
+
+        GameObject prefab = roulette.MarkKillEarned(weaponName);
+        if (prefab == null)
+        {
+            throw new CommandException(
+                $"'{weaponName}' is not a weapon in the pool. Both the name on the weapon and " +
+                "the prefab name work.");
+        }
+
+        // The moved weapon's own display name, not what was typed: the room names its
+        // locations after the weapons, and this is the spelling the datapackage uses.
+        string locationName = RouletteState.DisplayNameOf(prefab);
+        ArchipelagoConsole.LogMessage($"{Prompt}complete check {locationName}");
+
+        switch (LocationSender.Send_Location(locationName))
+        {
+            case LocationSendResult.Sent:
+                break;
+
+            case LocationSendResult.AlreadySent:
+                ArchipelagoConsole.LogMessage($"{locationName} was already checked this session.");
+                break;
+
+            case LocationSendResult.NotConnected:
+                throw new CommandException(
+                    $"{locationName} counts as killed with locally, but there is no room to send " +
+                    "its check to. Connect from the mod menu first.");
+
+            case LocationSendResult.UnknownLocation:
+                throw new CommandException(
+                    $"The room has no location called '{locationName}'. Check the apworld names " +
+                    "this weapon the same way the game does.");
+
+            default:
+                throw new CommandException(
+                    $"Could not send {locationName}'s check. See LogOutput.log.");
+        }
+    }
 
     /// <summary>
     /// Says anything at all to the room, for a command this list does not name and for plain
