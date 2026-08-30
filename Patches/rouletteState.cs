@@ -422,6 +422,18 @@ public class RouletteState
         double worstDeviation = 0d;
         var report = new System.Text.StringBuilder();
 
+        // Fixed column widths, so the numbers line up under each other and a skewed weapon
+        // is visible by scanning down the column rather than by reading every line. The name
+        // column is sized to the longest name across BOTH lists, so the two blocks share one
+        // set of columns; the rest are sized to the widest value they can hold.
+        const string listColumn = "has kill";
+        int nameWidth = Math.Max("weapon".Length, LongestName(obtained_Items, LongestName(hasKill_Items, 0)));
+        int hitsWidth = Math.Max("hits".Length, iterations.ToString().Length);
+
+        report.AppendLine(
+            $"  {"list".PadRight(listColumn.Length)}  {"weapon".PadRight(nameWidth)}  " +
+            $"{"hits".PadLeft(hitsWidth)}  {"actual".PadLeft(8)}  {"expected".PadLeft(8)}  {"off by".PadLeft(8)}");
+
         void ReportList(List<GameObject> pool, string label, double listShare)
         {
             for (int index = 0; index < pool.Count; index++)
@@ -434,14 +446,17 @@ public class RouletteState
                 if (deviation > worstDeviation) worstDeviation = deviation;
 
                 report.AppendLine(
-                    $"  [{label}] {(weapon == null ? "null" : weapon.name)}: {observed} " +
-                    $"({observed / (double)iterations * 100d:F2}% actual vs " +
-                    $"{listShare / pool.Count * 100d:F2}% expected, {deviation:F2}% off)");
+                    $"  {label.PadRight(listColumn.Length)}  " +
+                    $"{(weapon == null ? "null" : weapon.name).PadRight(nameWidth)}  " +
+                    $"{observed.ToString().PadLeft(hitsWidth)}  " +
+                    $"{$"{observed / (double)iterations * 100d:F2}%".PadLeft(8)}  " +
+                    $"{$"{listShare / pool.Count * 100d:F2}%".PadLeft(8)}  " +
+                    $"{$"{deviation:F2}%".PadLeft(8)}");
             }
         }
 
         ReportList(obtained_Items, "no kill", newShare);
-        ReportList(hasKill_Items, "has kill", killShare);
+        ReportList(hasKill_Items, listColumn, killShare);
 
         Plugin.BepinLogger.LogInfo(
             $"[RouletteState] distribution self-test: {iterations} draws, " +
@@ -452,6 +467,18 @@ public class RouletteState
             $"{(newCount == 0 || killCount == 0 ? " (one list is empty, so every draw falls back to the other)" : "")}" +
             $"{Environment.NewLine}  worst per-weapon deviation {worstDeviation:F2}%" +
             $"{Environment.NewLine}{report}");
+    }
+
+    /// <summary>Longest weapon name in a list, for sizing the self-test's name column.</summary>
+    private static int LongestName(List<GameObject> pool, int longestSoFar)
+    {
+        foreach (GameObject weapon in pool)
+        {
+            int length = weapon == null ? "null".Length : weapon.name.Length;
+            if (length > longestSoFar) longestSoFar = length;
+        }
+
+        return longestSoFar;
     }
 
     /// <summary>Numbered dump of the local player's unlocks. Called on every change and every roll.</summary>
