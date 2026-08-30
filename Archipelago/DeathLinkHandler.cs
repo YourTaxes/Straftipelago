@@ -1,16 +1,43 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Archipelago.MultiClient.Net.BounceFeatures.DeathLink;
 using BepInEx;
+using Straftapelago.Finnegan_McD.org.Patches;
 
 namespace Straftapelago.Finnegan_McD.org.Archipelago;
 
 public class DeathLinkHandler
 {
-    private static bool deathLinkEnabled;
+    /// <summary>
+    /// What the whole STRAFTAT lobby is told when a death arrives from the multiworld.
+    /// {0} is the Archipelago slot that died, {1} is the local player.
+    /// </summary>
+    private const string BroadcastFormat =
+        "{0} died in Archipelago and ruined it for {1} - everybody point and laugh at {1}";
+
+    private bool deathLinkEnabled;
     private string slotName;
     private readonly DeathLinkService service;
+
+    /// <summary>
+    /// Deaths waiting to be applied. Filled on the Archipelago client's websocket thread and
+    /// drained on Unity's main thread, so every touch of it is locked - Queue&lt;T&gt; corrupts its
+    /// backing array if an Enqueue lands in the middle of a Dequeue. Same reason
+    /// <see cref="Utils.MainThreadQueue"/> locks.
+    /// </summary>
     private readonly Queue<DeathLink> deathLinks = new();
+
+    /// <summary>
+    /// Set while a death this handler caused is still working its way back to us, so that it is
+    /// not immediately sent out again as a death of our own.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="KillPlayer"/> goes through FirstPersonController.DespawnObject, a ServerRpc
+    /// whose logic sets health to -8f. That lands back on this client a frame or two later and is
+    /// indistinguishable, at PlayerHealth.Update, from any other death - so without this latch a
+    /// received death bounces straight back into the multiworld and every linked world dies again.
+    /// </remarks>
+    private bool suppressNextDeath;
 
     /// <summary>
     /// instantiates our death link handler, sets up the hook for receiving death links, and enables death link if needed
@@ -54,7 +81,13 @@ public class DeathLinkHandler
     /// <param name="deathLink">Received Death Link object to handle</param>
     private void DeathLinkReceived(DeathLink deathLink)
     {
-        deathLinks.Enqueue(deathLink);
+        // Queued rather than acted on: this runs on the Archipelago client's websocket thread,
+        // and every step of actually killing the player is a main-thread-only Unity call.
+        // PlayerHealthDeathLinkKillPatch drains it.
+        lock (deathLinks)
+        {
+            deathLinks.Enqueue(deathLink);
+        }
 
         Plugin.BepinLogger.LogDebug(deathLink.Cause.IsNullOrWhiteSpace()
             ? $"Received Death Link from: {deathLink.Source}"
@@ -62,24 +95,105 @@ public class DeathLinkHandler
     }
 
     /// <summary>
-    /// can be called when in a valid state to kill the player, dequeueing and immediately killing the player with a
-    /// message if we have a death link in the queue
+    /// Called every frame from <see cref="Patches.PlayerHealthDeathLinkKillPatch"/> with the local
+    /// player's health. Kills them the way falling out of the map does if a death is waiting and
+    /// they are in a state to receive it.
     /// </summary>
-    public void KillPlayer()
+    /// <param name="playerHealth">The local player's PlayerHealth. The patch has already checked
+    /// IsOwner, so this is never somebody else's.</param>
+    public void KillPlayer(PlayerHealth playerHealth)
     {
         try
         {
-            if (deathLinks.Count < 1) return;
+            // Cheap early-out for the overwhelmingly common case: this runs every frame, and
+            // almost every one of them has nothing waiting.
+            lock (deathLinks)
+            {
+                if (deathLinks.Count < 1) return;
+            }
 
-            var deathLink = deathLinks.Dequeue();
+            if (playerHealth == null || playerHealth.controller == null) return;
+
+            // A death waits rather than being spent. Health at or below zero means they are
+            // already dying or dead, and the controller's canMove is false through the freezes
+            // PlayerManager.SetPlayerMove puts on the round transitions - killing into either of
+            // those states does nothing visible and the death would be silently thrown away.
+            //
+            // controller.canMove, NOT playerHealth.canMove: the one on PlayerHealth is
+            // initialized true in its constructor and no game code ever writes it again, so it
+            // would gate on nothing. The controller's is the live one, and it is also lowered by
+            // the taser - a death arriving mid-stun therefore lands when the stun ends, which is
+            // the right side to err on.
+            if (playerHealth.health <= 0f || !playerHealth.controller.canMove) return;
+
+            DeathLink deathLink;
+            lock (deathLinks)
+            {
+                // Re-checked inside the lock rather than trusting the count above. Nothing else
+                // dequeues today, but a Dequeue on an empty queue throws, and the guard costs
+                // nothing next to the kill it is protecting.
+                if (deathLinks.Count < 1) return;
+                deathLink = deathLinks.Dequeue();
+            }
+
             var cause = deathLink.Cause.IsNullOrWhiteSpace() ? GetDeathLinkCause(deathLink) : deathLink.Cause;
 
-            //TODO kill the player
             Plugin.BepinLogger.LogMessage(cause);
+
+            // Armed before the kill, not after: DespawnObject is a ServerRpc, and on a listen
+            // host the server half can run inside this call.
+            suppressNextDeath = true;
+
+            // Vanilla's void death, which is FirstPersonController.OnTriggerEnter's "Killz"
+            // branch and its own y < -300f branch, both of which do exactly this. fellVoid is
+            // what makes PlayerHealth.Update print the death to the feed.
+            //
+            // Settings.Instance.IncreaseSuicidesAmount() is the one line of that sequence left
+            // out on purpose: a death handed to us by another world is not a suicide, so it must
+            // not inflate the player's suicide stat - and calling it would make SuicideDetectPatch
+            // print a second, wrong "killed themselves" line over the top of ours.
+            playerHealth.fellVoid = true;
+            playerHealth.controller.DespawnObject(playerHealth.gameObject);
+
+            Broadcast(deathLink.Source);
         }
         catch (Exception e)
         {
             Plugin.BepinLogger.LogError(e);
+        }
+    }
+
+    /// <summary>
+    /// Tells every player in the STRAFTAT match who is responsible for this death.
+    /// </summary>
+    /// <param name="source">The Archipelago slot whose death caused ours.</param>
+    private void Broadcast(string source)
+    {
+        string message = string.Format(BroadcastFormat, source, KillFeed.LocalPlayerName);
+
+        Plugin.BepinLogger.LogInfo($"[DeathLink] {message}");
+
+        try
+        {
+            // WriteLog, not KillFeed's WriteLocalLog: this line is meant for the whole lobby.
+            // WriteLog is a ServerRpc whose reader checks only IsServer - there is no ownership
+            // check - so any client may call it and the server relays it to every observer.
+            // MatchLogs is a NetworkBehaviour singleton and is null offline; MatchLogsOffline is
+            // the live one there, and local-only is all there is to write to anyway.
+            if (MatchLogs.Instance != null)
+            {
+                MatchLogs.Instance.WriteLog(message);
+            }
+            else if (MatchLogsOffline.Instance != null)
+            {
+                MatchLogsOffline.Instance.WriteLog(message);
+            }
+        }
+        catch (Exception e)
+        {
+            // The player is already dead by now and the line is in the BepInEx log either way.
+            // A half-built chat panel must not turn into a swallowed death.
+            Plugin.BepinLogger.LogError($"[DeathLink] Could not announce the death to the lobby{Environment.NewLine}{e}");
         }
     }
 
@@ -94,9 +208,51 @@ public class DeathLinkHandler
     }
 
     /// <summary>
+    /// Called from <see cref="Patches.PlayerHealthDeathLinkSendPatch"/> on the one frame the local
+    /// player's death is visible, whatever caused it.
+    /// </summary>
+    /// <param name="playerHealth">The local player's PlayerHealth, read for what killed them.</param>
+    public void LocalPlayerDied(PlayerHealth playerHealth)
+    {
+        try
+        {
+            // The death we caused ourselves, coming back around. Consumed rather than merely
+            // tested, so the next real death is shared normally.
+            if (suppressNextDeath)
+            {
+                suppressNextDeath = false;
+                return;
+            }
+
+            SendDeathLink(DescribeDeath(playerHealth));
+        }
+        catch (Exception e)
+        {
+            Plugin.BepinLogger.LogError(e);
+        }
+    }
+
+    /// <summary>
+    /// Turns the flags vanilla sets on the way into a death into a line for the world that
+    /// receives it. The two flags are the same ones PlayerHealth.Update reads for its own feed.
+    /// </summary>
+    private string DescribeDeath(PlayerHealth playerHealth)
+    {
+        string playerName = KillFeed.LocalPlayerName;
+
+        if (playerHealth == null) return $"{playerName} died in STRAFTAT";
+        if (playerHealth.fellVoid) return $"{playerName} fell into the void";
+        if (playerHealth.suicide) return $"{playerName} killed themselves";
+
+        return $"{playerName} was killed in STRAFTAT";
+    }
+
+    /// <summary>
     /// called to send a death link to the multiworld
     /// </summary>
-    public void SendDeathLink()
+    /// <param name="cause">what killed the player, shown by the worlds that receive it. Null falls
+    /// back to the bare slot name.</param>
+    public void SendDeathLink(string cause = null)
     {
         try
         {
@@ -104,8 +260,7 @@ public class DeathLinkHandler
 
             Plugin.BepinLogger.LogMessage("sharing your death...");
 
-            // add the cause here
-            var linkToSend = new DeathLink(slotName);
+            var linkToSend = new DeathLink(slotName, cause);
 
             service.SendDeathLink(linkToSend);
         }
