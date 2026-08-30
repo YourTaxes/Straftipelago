@@ -72,6 +72,8 @@ sysinfo.txt
 mono_crash.*
 
 # Builds
+# Mod build output (zip produced on every build)
+/[Bb]in/
 *.apk
 *.aab
 *.unitypackage
