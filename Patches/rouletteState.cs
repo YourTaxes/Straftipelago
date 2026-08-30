@@ -339,10 +339,25 @@ public class RouletteState
         receivedWeaponNames.Add(weaponName);
 
         // Not EnsureInitialized(): out of a match SpawnerManager has no weapons, and building
-        // the pool off an empty list would set initialized and leave it that way.
+        // the pool off an empty list would set initialized and leave it that way. The name is
+        // already banked, so the replay in Reset() grants it once the pool is real.
         if (!initialized) return false;
 
-        return GrantByName(weaponName);
+        if (GrantByName(weaponName)) return true;
+
+        // Told apart, because the two failures mean opposite things. A name that resolves is a
+        // duplicate, which is ordinary - the room replays the whole inventory on every connect.
+        // A name that resolves to nothing is a disagreement between this mod and the apworld
+        // about what a weapon is called, and the unlock is silently lost every time it happens.
+        if (ResolveByAnyName(weaponName) == null)
+        {
+            Plugin.BepinLogger.LogWarning(
+                $"[RouletteState] the room granted '{weaponName}', which is not a weapon in this " +
+                "build; nothing was unlocked. The apworld's item name and the game's prefab name " +
+                "disagree.");
+        }
+
+        return false;
     }
 
     /// <summary>The single mutation point for the pool. Also the seam for a future Archipelago hook.</summary>

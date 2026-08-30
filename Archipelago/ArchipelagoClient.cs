@@ -360,7 +360,11 @@ public class ArchipelagoClient
     /// </remarks>
     private const string ProgressiveLazerItem = "Progressive Lazer";
 
-    private static readonly string[] LazerTiers = { "Beam Load", "Blank State", "Hand Cannon" };
+    // Prefab names, and in the order the tiers are meant to be handed out - which is NOT the
+    // order the apworld's own comments list them in. HandCanon has one 'n': that is how the
+    // game spells it, and spelling it "Hand Cannon" here is why the third tier silently granted
+    // nothing (the name resolved to no weapon, and Grant answers false for that).
+    private static readonly string[] LazerTiers = { "BeamLoad", "HandCanon", "BlankState" };
 
     /// <summary>The apworld's two filler items: a trap and a buff.</summary>
     private const string DeathTrapItem = "Death";
