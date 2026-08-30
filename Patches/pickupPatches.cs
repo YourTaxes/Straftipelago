@@ -645,45 +645,13 @@ public class PlayerPickupUpdatePatch
 {
     static bool Prefix(PlayerPickup __instance)
     {
-        // These debug keys are gated on IsOwner because this prefix runs once per
+        // The debug keys are gated on IsOwner because this prefix runs once per
         // PlayerPickup instance per frame — without the gate a single P press granted one
         // weapon per player in the match, and O reset the pool that many times over.
         if (__instance.IsOwner)
         {
             PendingRoll.CheckTimeout();
-
-            RouletteState roulette = Plugin.RouletteState;
-
-            if (Input.GetKeyDown(KeyCode.O))
-            {
-                roulette.Reset();
-                Plugin.BepinLogger.LogInfo($"Reset roulette item lists. unowned_items: {roulette.unowned_items.Count}, obtained_Items: {roulette.obtained_Items.Count}, hasKill_Items: {roulette.hasKill_Items.Count}");
-            }
-
-            if (Input.GetKeyDown(KeyCode.P) && roulette.unowned_items.Count > 0)
-            {
-                int randomIndex = UnityEngine.Random.Range(0, roulette.unowned_items.Count);
-                GameObject randomItem = roulette.unowned_items[randomIndex];
-                if (roulette.Grant(randomItem))
-                {
-                    Plugin.BepinLogger.LogInfo($"Added random item {randomItem.name} to obtained_Items. Remaining unowned_items: {roulette.unowned_items.Count}");
-                }
-            }
-
-            // Unlocks everything at once, which is what makes the unobtainable-pickup rule
-            // testable without playing far enough to earn the weapons.
-            if (Input.GetKeyDown(KeyCode.I))
-            {
-                int moved = roulette.GrantAllUnowned();
-                Plugin.BepinLogger.LogInfo($"Moved {moved} weapon(s) from unowned_items to obtained_Items. obtained_Items: {roulette.obtained_Items.Count}, unowned_items: {roulette.unowned_items.Count}");
-            }
-
-            // Proves the "New Weapon Chance is honoured, and the draw inside each list is
-            // fair" requirement as a number in the log rather than as a claim about the code.
-            if (Input.GetKeyDown(KeyCode.K))
-            {
-                roulette.SelfTest(100000);
-            }
+            DebugKeys();
         }
 
         Traverse trav = Traverse.Create(__instance);
@@ -739,6 +707,54 @@ public class PlayerPickupUpdatePatch
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// The roulette debug keys, which do nothing unless Debug Buttons is ticked on this
+    /// mod's Mod Menu page.
+    /// </summary>
+    /// <remarks>
+    /// The entry is read live rather than cached, so ticking the box takes effect on the
+    /// next frame instead of on the next launch. Null-checked because the entry does not
+    /// exist until <c>ArchipelagoMenu.Install</c> has run, and an Install that threw would
+    /// otherwise turn every frame of every match into an NRE.
+    /// </remarks>
+    static void DebugKeys()
+    {
+        if (ArchipelagoMenu.DebugButtons == null || !ArchipelagoMenu.DebugButtons.Value) return;
+
+        RouletteState roulette = Plugin.RouletteState;
+
+        if (Input.GetKeyDown(KeyCode.O))
+        {
+            roulette.Reset();
+            Plugin.BepinLogger.LogInfo($"Reset roulette item lists. unowned_items: {roulette.unowned_items.Count}, obtained_Items: {roulette.obtained_Items.Count}, hasKill_Items: {roulette.hasKill_Items.Count}");
+        }
+
+        if (Input.GetKeyDown(KeyCode.P) && roulette.unowned_items.Count > 0)
+        {
+            int randomIndex = UnityEngine.Random.Range(0, roulette.unowned_items.Count);
+            GameObject randomItem = roulette.unowned_items[randomIndex];
+            if (roulette.Grant(randomItem))
+            {
+                Plugin.BepinLogger.LogInfo($"Added random item {randomItem.name} to obtained_Items. Remaining unowned_items: {roulette.unowned_items.Count}");
+            }
+        }
+
+        // Unlocks everything at once, which is what makes the unobtainable-pickup rule
+        // testable without playing far enough to earn the weapons.
+        if (Input.GetKeyDown(KeyCode.I))
+        {
+            int moved = roulette.GrantAllUnowned();
+            Plugin.BepinLogger.LogInfo($"Moved {moved} weapon(s) from unowned_items to obtained_Items. obtained_Items: {roulette.obtained_Items.Count}, unowned_items: {roulette.unowned_items.Count}");
+        }
+
+        // Proves the "New Weapon Chance is honoured, and the draw inside each list is
+        // fair" requirement as a number in the log rather than as a claim about the code.
+        if (Input.GetKeyDown(KeyCode.K))
+        {
+            roulette.SelfTest(100000);
+        }
     }
 }
 

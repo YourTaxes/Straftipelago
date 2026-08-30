@@ -15,6 +15,36 @@ public class DeathLinkHandler
     private const string BroadcastFormat =
         "{0} died in Archipelago and ruined it for {1} - everybody point and laugh at {1}";
 
+    /// <summary>
+    /// What the lobby is told when the death came from a Death trap rather than another world.
+    /// {0} is the local player. Separate from <see cref="BroadcastFormat"/> because there is no
+    /// slot to blame - the room did this on purpose.
+    /// </summary>
+    private const string TrapBroadcastFormat =
+        "Archipelago sent {0} a Death trap - everybody point and laugh at {0}";
+
+    /// <summary>
+    /// One death waiting to be applied, and where it came from.
+    /// </summary>
+    /// <remarks>
+    /// The two share this queue, and must: they compete for the same one death the player can
+    /// usefully be given at a time, and both need the same wait for a state where a kill is
+    /// visible. Only the announcement differs.
+    /// </remarks>
+    private readonly struct PendingDeath
+    {
+        public PendingDeath(DeathLink link, bool isTrap)
+        {
+            Link = link;
+            IsTrap = isTrap;
+        }
+
+        /// <summary>The multiworld death that caused this. Null for a trap.</summary>
+        public DeathLink Link { get; }
+
+        public bool IsTrap { get; }
+    }
+
     private bool deathLinkEnabled;
     private string slotName;
     private readonly DeathLinkService service;
@@ -25,7 +55,7 @@ public class DeathLinkHandler
     /// backing array if an Enqueue lands in the middle of a Dequeue. Same reason
     /// <see cref="Utils.MainThreadQueue"/> locks.
     /// </summary>
-    private readonly Queue<DeathLink> deathLinks = new();
+    private readonly Queue<PendingDeath> deathLinks = new();
 
     /// <summary>
     /// Set while a death this handler caused is still working its way back to us, so that it is
@@ -86,12 +116,33 @@ public class DeathLinkHandler
         // PlayerHealthDeathLinkKillPatch drains it.
         lock (deathLinks)
         {
-            deathLinks.Enqueue(deathLink);
+            deathLinks.Enqueue(new PendingDeath(deathLink, false));
         }
 
         Plugin.BepinLogger.LogDebug(deathLink.Cause.IsNullOrWhiteSpace()
             ? $"Received Death Link from: {deathLink.Source}"
             : deathLink.Cause);
+    }
+
+    /// <summary>
+    /// Queues a death the room inflicted with a Death trap, to be applied like a received one.
+    /// </summary>
+    /// <remarks>
+    /// Through this queue rather than a kill path of its own, because everything that makes a
+    /// received death safe applies to a trap unchanged: the wait for a state where the kill is
+    /// visible, and above all the suppressNextDeath latch. Without that latch the trap's own
+    /// death would come back around through PlayerHealth.Update and be reported to the
+    /// multiworld as a fresh death of ours, killing every linked world for a trap that was only
+    /// ever meant for this one.
+    /// </remarks>
+    public void EnqueueTrapDeath()
+    {
+        lock (deathLinks)
+        {
+            deathLinks.Enqueue(new PendingDeath(null, true));
+        }
+
+        Plugin.BepinLogger.LogDebug("[DeathLink] queued a Death trap from the room");
     }
 
     /// <summary>
@@ -126,17 +177,20 @@ public class DeathLinkHandler
             // the right side to err on.
             if (playerHealth.health <= 0f || !playerHealth.controller.canMove) return;
 
-            DeathLink deathLink;
+            PendingDeath pendingDeath;
             lock (deathLinks)
             {
                 // Re-checked inside the lock rather than trusting the count above. Nothing else
                 // dequeues today, but a Dequeue on an empty queue throws, and the guard costs
                 // nothing next to the kill it is protecting.
                 if (deathLinks.Count < 1) return;
-                deathLink = deathLinks.Dequeue();
+                pendingDeath = deathLinks.Dequeue();
             }
 
-            var cause = deathLink.Cause.IsNullOrWhiteSpace() ? GetDeathLinkCause(deathLink) : deathLink.Cause;
+            DeathLink deathLink = pendingDeath.Link;
+            string cause = pendingDeath.IsTrap
+                ? "Received a Death trap from the room"
+                : deathLink.Cause.IsNullOrWhiteSpace() ? GetDeathLinkCause(deathLink) : deathLink.Cause;
 
             Plugin.BepinLogger.LogMessage(cause);
 
@@ -155,7 +209,9 @@ public class DeathLinkHandler
             playerHealth.fellVoid = true;
             playerHealth.controller.DespawnObject(playerHealth.gameObject);
 
-            Broadcast(deathLink.Source);
+            Broadcast(pendingDeath.IsTrap
+                ? string.Format(TrapBroadcastFormat, KillFeed.LocalPlayerName)
+                : string.Format(BroadcastFormat, deathLink.Source, KillFeed.LocalPlayerName));
         }
         catch (Exception e)
         {
@@ -164,13 +220,12 @@ public class DeathLinkHandler
     }
 
     /// <summary>
-    /// Tells every player in the STRAFTAT match who is responsible for this death.
+    /// Tells every player in the STRAFTAT match what is responsible for this death.
     /// </summary>
-    /// <param name="source">The Archipelago slot whose death caused ours.</param>
-    private void Broadcast(string source)
+    /// <param name="message">The already-formatted line, since a trap and a received death
+    /// blame different things.</param>
+    private void Broadcast(string message)
     {
-        string message = string.Format(BroadcastFormat, source, KillFeed.LocalPlayerName);
-
         Plugin.BepinLogger.LogInfo($"[DeathLink] {message}");
 
         try

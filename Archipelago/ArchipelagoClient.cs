@@ -8,6 +8,7 @@ using Archipelago.MultiClient.Net.Enums;
 using Archipelago.MultiClient.Net.Helpers;
 using Archipelago.MultiClient.Net.MessageLog.Messages;
 using Archipelago.MultiClient.Net.Packets;
+using Straftapelago.Finnegan_McD.org.Patches;
 using Straftapelago.Finnegan_McD.org.Utils;
 
 namespace Straftapelago.Finnegan_McD.org.Archipelago;
@@ -34,6 +35,10 @@ public class ArchipelagoClient
     public void Connect()
     {
         if (Authenticated || attemptingConnection) return;
+
+        // Shut before the socket is opened, so the inventory the room is about to replay cannot
+        // set off a trap or a buff that was spent long ago. ApplySlotSettings reopens it.
+        acceptOneShotItems = false;
 
         try
         {
@@ -85,7 +90,11 @@ public class ArchipelagoClient
                     session.TryConnectAndLogin(
                         Game,
                         ServerData.SlotName,
-                        ItemsHandlingFlags.IncludeOwnItems,
+                        // AllItems, not IncludeOwnItems: the starting inventory is a SEPARATE
+                        // flag, and the room's starting_weapon option is delivered as a
+                        // precollected item. Without it the player connects with an empty
+                        // roulette pool and no way to fill it.
+                        ItemsHandlingFlags.AllItems,
                         new Version(APVersion),
                         password: ServerData.Password,
                         requestSlotData: ServerData.NeedSlotData
@@ -113,7 +122,7 @@ public class ArchipelagoClient
             ServerData.SetupSession(success.SlotData, session.RoomState.Seed);
             Authenticated = true;
 
-            // After SetupSession above, which is what reads death_link out of the slot data the
+            // After SetupSession above, which is what reads deathlink out of the slot data the
             // login just returned. Constructed with it rather than toggled afterwards, so the
             // service is subscribed on the server side before the first frame can report a death.
             DeathLinkHandler = new(session.CreateDeathLinkService(), ServerData.SlotName, ServerData.DeathLink);
@@ -126,6 +135,8 @@ public class ArchipelagoClient
             // succeeded. One call per line because each one becomes its own chat message.
             foreach (string line in ServerData.DescribeSlotData())
                 ArchipelagoConsole.LogMessage(line);
+
+            ApplySlotSettings();
         }
         else
         {
@@ -145,6 +156,47 @@ public class ArchipelagoClient
     }
 
     /// <summary>
+    /// Puts the room's settings into effect, on the main thread.
+    /// </summary>
+    /// <remarks>
+    /// <para>Queued rather than done here because <see cref="HandleConnectResult"/> runs on a
+    /// ThreadPool thread and every line of this is a Unity call: assigning GreenMode raises
+    /// SettingChanged, whose handler writes a killfeed line and walks every FirstPersonController
+    /// in the scene, and Reset() reads SpawnerManager.</para>
+    /// <para>Assigning the two Mod Menu entries is what mirrors the room's answer onto the Mod
+    /// Menu page and into the .cfg. A BepInEx entry only raises SettingChanged when the value
+    /// actually changes, so the tint refresh and its killfeed line happen once, and only when
+    /// the room disagrees with what was already set. Both stay editable afterwards - the room
+    /// decides them at connect, not for the rest of the session.</para>
+    /// <para>Death link is not applied here: <see cref="DeathLinkHandler"/> is constructed with
+    /// the value, which subscribes on the server side before any frame can report a death.</para>
+    /// </remarks>
+    private void ApplySlotSettings()
+    {
+        MainThreadActions.Enqueue(() =>
+        {
+            ArchipelagoMenu.GreenMode.Value = ServerData.GreenMode;
+            ArchipelagoMenu.NewWeaponChance.Value = ServerData.NewWeaponChance;
+
+            // Assigning .Value updates the config and everything listening to it, but NOT the
+            // Mod Menu page: it builds a plugin's option list once and caches it, so a control
+            // never re-reads its entry on its own. This is what makes the page agree with what
+            // the room just decided.
+            ArchipelagoMenu.RefreshDisplayedValues();
+
+            // The three weapon toggles only take effect through a rebuild, and the pool also has
+            // to pick up whatever items the login has already delivered - both of which this one
+            // call covers.
+            Plugin.RouletteState?.Reset();
+
+            // Last of all, and the reason this runs on a frame rather than on the login's own
+            // thread: everything the room replayed on connect has arrived and been folded into
+            // the pool by now, so a Death or a Health from here on is a new one.
+            acceptOneShotItems = true;
+        });
+    }
+
+    /// <summary>
     /// something went wrong, or we need to properly disconnect from the server. cleanup and re null our session
     /// </summary>
     /// <remarks>
@@ -159,6 +211,10 @@ public class ArchipelagoClient
         session = null;
         locationIdsByName = null;
         Authenticated = false;
+
+        // So a socket that drops and is reconnected goes through the same replay-suppressing
+        // open as a first connect, rather than inheriting the last session's answer.
+        acceptOneShotItems = false;
     }
 
     public void SendMessage(string message)
@@ -208,6 +264,42 @@ public class ArchipelagoClient
     }
 
     /// <summary>
+    /// The names of every location this slot has already checked, as the room spells them.
+    /// </summary>
+    /// <remarks>
+    /// <para>This is the record of which weapons have earned their first kill, and it lives on
+    /// the server rather than in this process: one location per weapon, completed the moment
+    /// that kill happens. <see cref="Patches.RouletteState.Reset"/> reads it to rebuild
+    /// hasKill_Items, which is why a reconnect - or a fresh launch of the game - restores the
+    /// player's progress rather than starting the pool over.</para>
+    /// <para>Static to match <see cref="Authenticated"/> and <see cref="ServerData"/>, since
+    /// the pool reaches everything about the connection that way. Empty rather than null when
+    /// there is no session, so a caller offline simply finds nothing checked.</para>
+    /// </remarks>
+    public static IEnumerable<string> GetCheckedLocationNames()
+    {
+        ArchipelagoSession currentSession = Plugin.ArchipelagoClient?.session;
+        if (currentSession == null) return Enumerable.Empty<string>();
+
+        try
+        {
+            return currentSession.Locations.AllLocationsChecked
+                .Select(locationId => currentSession.Locations.GetLocationNameFromId(locationId, Game))
+                .Where(name => !string.IsNullOrEmpty(name))
+                .ToArray();
+        }
+        catch (Exception e)
+        {
+            // Materialized inside the try on purpose - the enumeration is where the datapackage
+            // is actually touched, so deferring it would move the throw out to the caller, which
+            // is a Harmony prefix on PlayerPickup.Awake() that must not see one.
+            Plugin.BepinLogger.LogError(
+                $"Could not read the checked locations from the room{Environment.NewLine}{e}");
+            return Enumerable.Empty<string>();
+        }
+    }
+
+    /// <summary>
     /// Tells the room this location has been checked.
     /// </summary>
     /// <remarks>
@@ -227,8 +319,19 @@ public class ArchipelagoClient
     /// <param name="helper">item helper which we can grab our item from</param>
     private void OnItemReceived(ReceivedItemsHelper helper)
     {
+        // Dequeued FIRST, unconditionally, and only then judged. This event fires once per item
+        // the helper enqueues, so exactly one dequeue per call is what keeps the queue in step
+        // with the callbacks - skipping the dequeue leaves that item at the head of the queue
+        // forever and every later receipt pops an older one instead of its own. That is not
+        // hypothetical: reconnecting re-sends every item this slot has ever had, all of which
+        // the guard below rejects, so one rejected-without-dequeuing item is enough to make the
+        // room's "sending Hand Grenade" arrive here as a GodSword for the rest of the session.
         var receivedItem = helper.DequeueItem();
 
+        // Already applied. The server replays the whole inventory on every connect, and this
+        // watermark is what stops a reconnect re-granting it - which matters most for the items
+        // that are not idempotent: a second Progressive Lazer would unlock a tier that was never
+        // earned, and a second Death would kill the player again.
         if (helper.Index <= ServerData.Index) return;
 
         ServerData.Index++;
@@ -242,9 +345,127 @@ public class ArchipelagoClient
             $"RECIEVED {receivedItem.ItemDisplayName} (item id {receivedItem.ItemId}, {receivedItem.Flags}) " +
             $"FROM {receivedItem.Player} playing {receivedItem.ItemGame} " +
             $"AT {receivedItem.LocationDisplayName} (location id {receivedItem.LocationId})");
-        // TODO reward the item here
-        // if items can be received while in an invalid state for actually handling them, they can be placed in a local
-        // queue/collection to be handled later
+
+        ApplyReceivedItem(receivedItem.ItemDisplayName);
+    }
+
+    /// <summary>
+    /// The name the apworld gives the three-tier lazer, and the weapons each receipt of it
+    /// unlocks in order.
+    /// </summary>
+    /// <remarks>
+    /// The apworld's item table has one "Progressive Lazer" standing in for three weapons that
+    /// exist as locations but never as items, so the mod is the half that has to turn the Nth
+    /// copy back into a weapon name. Order is the tier order the apworld's own comments give.
+    /// </remarks>
+    private const string ProgressiveLazerItem = "Progressive Lazer";
+
+    private static readonly string[] LazerTiers = { "Beam Load", "Blank State", "Hand Cannon" };
+
+    /// <summary>The apworld's two filler items: a trap and a buff.</summary>
+    private const string DeathTrapItem = "Death";
+
+    private const string HealthBuffItem = "Health";
+
+    /// <summary>How many Progressive Lazers this session has already been given.</summary>
+    private int lazerTiersReceived;
+
+    /// <summary>
+    /// Whether an arriving Death or Health may actually go off, as opposed to being one the
+    /// room is only reminding us we already had.
+    /// </summary>
+    /// <remarks>
+    /// <para>The room replays this slot's ENTIRE inventory on every connect. For a weapon that
+    /// is exactly what is wanted - re-granting one it already gave is how the pool gets rebuilt
+    /// after a rejoin, and Grant refuses the duplicates. For the two filler items it is not:
+    /// they are events, not possessions, and replaying them killed the player and set their
+    /// health on connect for a trap and a buff that had already been spent, possibly rounds ago.
+    /// The <see cref="ArchipelagoData.Index"/> watermark alone does not cover it, because that
+    /// counter starts at zero in a fresh process - so the first connect after launching the
+    /// game treats the whole replayed inventory as new.</para>
+    /// <para>Opened by the queued action <see cref="ApplySlotSettings"/> runs, which is the
+    /// first main-thread frame after the login completed. The replay is delivered on the socket
+    /// thread in the same breath as the Connected packet that ended the login, so it is over
+    /// long before a frame ticks; anything arriving after that frame genuinely happened while
+    /// the player was connected and playing.</para>
+    /// <para>volatile because it is written on Unity's main thread and read on the Archipelago
+    /// client's websocket thread.</para>
+    /// </remarks>
+    private volatile bool acceptOneShotItems;
+
+    /// <summary>
+    /// Turns one received item into its effect in the game.
+    /// </summary>
+    /// <remarks>
+    /// Every branch defers to the main thread, because this runs on the client's websocket
+    /// thread: granting a weapon resolves it against SpawnerManager, and both filler items
+    /// touch the local player.
+    /// </remarks>
+    private void ApplyReceivedItem(string itemName)
+    {
+        if (string.IsNullOrEmpty(itemName)) return;
+
+        switch (itemName)
+        {
+            case DeathTrapItem:
+                if (!AllowOneShot(itemName)) return;
+
+                // Through the DeathLink handler's own queue rather than a second kill path, so
+                // the trap inherits its suppressNextDeath latch - without which the death it
+                // causes would be reported straight back out as a fresh death link.
+                MainThreadActions.Enqueue(() => DeathLinkHandler?.EnqueueTrapDeath());
+                return;
+
+            case HealthBuffItem:
+                if (!AllowOneShot(itemName)) return;
+
+                MainThreadActions.Enqueue(PlayerHealthBuff.Enqueue);
+                return;
+
+            case ProgressiveLazerItem:
+                MainThreadActions.Enqueue(GrantNextLazerTier);
+                return;
+
+            default:
+                MainThreadActions.Enqueue(() => Plugin.RouletteState?.ReceiveWeapon(itemName));
+                return;
+        }
+    }
+
+    /// <summary>
+    /// Whether a filler item that fires once may fire now. See <see cref="acceptOneShotItems"/>.
+    /// </summary>
+    private bool AllowOneShot(string itemName)
+    {
+        if (acceptOneShotItems) return true;
+
+        // Reported rather than dropped in silence: "the room sent me a Death and nothing
+        // happened" is otherwise indistinguishable from the trap being broken.
+        ArchipelagoConsole.LogMessage(
+            $"Ignoring the {itemName} the room replayed on connect - it was already spent.");
+        return false;
+    }
+
+    /// <summary>
+    /// Grants the lazer tier this receipt of <see cref="ProgressiveLazerItem"/> stands for.
+    /// </summary>
+    private void GrantNextLazerTier()
+    {
+        if (lazerTiersReceived >= LazerTiers.Length)
+        {
+            // Reported rather than ignored: the apworld puts exactly three of these in the pool,
+            // so a fourth means the two halves disagree about how many tiers there are.
+            Plugin.BepinLogger.LogWarning(
+                $"[Archipelago] received a {lazerTiersReceived + 1}th '{ProgressiveLazerItem}' but " +
+                $"only {LazerTiers.Length} lazer tiers exist; ignoring it.");
+            return;
+        }
+
+        string tier = LazerTiers[lazerTiersReceived];
+        lazerTiersReceived++;
+
+        ArchipelagoConsole.LogMessage($"{ProgressiveLazerItem} {lazerTiersReceived} unlocked the {tier}.");
+        Plugin.RouletteState?.ReceiveWeapon(tier);
     }
 
     /// <summary>

@@ -89,15 +89,20 @@ internal class ArchipelagoOverlay : MonoBehaviour
     }
 
     /// <summary>
-    /// Pumps both message queues. This is the mod's one guaranteed per-frame main-thread
-    /// callback, and both sinks need exactly that: their messages are produced on the
-    /// Archipelago client's websocket and ThreadPool threads, where no Unity API may be
-    /// touched.
+    /// Pumps the two message queues and the action queue. This is the mod's one guaranteed
+    /// per-frame main-thread callback, and all three sinks need exactly that: their contents
+    /// are produced on the Archipelago client's websocket and ThreadPool threads, where no
+    /// Unity API may be touched.
     /// </summary>
     private void Update()
     {
         ArchipelagoConsole.Pump();
         Killfeed.Pump();
+
+        // Last of the three. An action here can write to either of the sinks above - applying
+        // Green Mode puts a line in the killfeed - and draining it after them means such a line
+        // waits a frame rather than sitting in a queue that has already been pumped.
+        MainThreadActions.Pump();
     }
 
     private void OnGUI()

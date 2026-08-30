@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using BepInEx;
 using BepInEx.Configuration;
+using HarmonyLib;
 using ModMenu.Api;
 using ModMenu.Behaviours.OptionList.Dummies;
 using ModMenu.Behaviours.OptionList.ValueControllers;
@@ -39,6 +40,9 @@ internal static class ArchipelagoMenu
 
     //determines the greenness. not visible through modmenu
     public static ConfigEntry<Vector3> GreenModeTintRgb { get; private set; }
+
+    // gates the I/O/P/K roulette debug keys in PlayerPickupUpdatePatch
+    public static ConfigEntry<bool> DebugButtons { get; private set; }
 
     // creates the configs and the mod menu custom configs.
     public static void Install(ConfigFile config)
@@ -155,6 +159,13 @@ internal static class ArchipelagoMenu
 
         // Picked up without a restart when this file is edited and BepInEx reloads it.
         GreenModeTintRgb.SettingChanged += (_, _) => GreenModeTint.RefreshAll();
+
+        // Bound after the Green Mode entries so the Debug section sits below them, in the
+        // .cfg and on the Mod Menu page alike.
+        DebugButtons = config.Bind("Debug", "Debug Buttons", false,
+            "Enables the roulette debug keys while in a match:\n\nO resets the item pools, " +
+            "P grants one random unowned weapon, I grants every unowned weapon, and K runs " +
+            "the roll distribution self-test and writes the result to the log.");
     }
 
     /// <summary>
@@ -221,6 +232,89 @@ internal static class ArchipelagoMenu
     private static void Describe(OptionListContext c, StringValueController item, string title, string body)
     {
         item.OnItemHovered += () => c.SetInfoPanelContents(title, Section, body);
+    }
+
+    /// <summary>
+    /// Makes the Mod Menu page show the current value of every setting this mod owns.
+    /// </summary>
+    /// <remarks>
+    /// <para>Needed because Mod Menu builds a plugin's option list once and keeps it:
+    /// <c>OptionListPanel</c> holds an <c>m_optionCache</c> keyed by mod and re-shows the same
+    /// rows every time the page is opened, so a control never looks at its config entry again
+    /// after the frame it was created on. Setting <c>GreenMode.Value</c> from slot data
+    /// therefore tinted the game but left the checkbox unticked, and would have kept doing so
+    /// for the whole session.</para>
+    /// <para>The row is not rebuilt, only re-read. <c>UpdateAppearance()</c> is public on
+    /// <see cref="BoxedValueController"/>, and for a control Mod Menu generated from a config
+    /// entry its getter is <c>() =&gt; option.BoxedValue</c>, which reads that entry live - so
+    /// this pushes the current value into the widget with SetIsOnWithoutNotify /
+    /// SetValueWithoutNotify, raising no change events and writing nothing back.</para>
+    /// <para>Must be called on the main thread.</para>
+    /// </remarks>
+    public static void RefreshDisplayedValues()
+    {
+        // FindObjectsOfTypeAll, not FindObjectsOfType: the rows for a page that is not currently
+        // open are inactive, and inactive is exactly the state they are in when a connect
+        // happens from the login block on some other screen.
+        BoxedValueController[] controllers = Resources.FindObjectsOfTypeAll<BoxedValueController>();
+
+        foreach (BoxedValueController controller in controllers)
+        {
+            if (controller == null || !OwnsSetting(controller)) continue;
+
+            try
+            {
+                controller.UpdateAppearance();
+            }
+            catch (Exception e)
+            {
+                // One row that will not redraw must not cost the others theirs, and this runs
+                // from a queued action where a throw would be reported as the action failing.
+                Plugin.BepinLogger.LogError(
+                    $"Could not refresh a Mod Menu control{Environment.NewLine}{e}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether this control was generated from one of this mod's config entries.
+    /// </summary>
+    /// <remarks>
+    /// Filtered rather than refreshing everything on screen, because
+    /// <see cref="Resources.FindObjectsOfTypeAll{T}"/> also returns every other mod's rows and
+    /// the untouched prefabs the rows are cloned from. Reached through Traverse because
+    /// <c>sourceOption</c> is internal to Mod Menu; it is null for a control built by hand
+    /// through the content builder - our own login fields - which is another thing this
+    /// excludes, since those read <see cref="ArchipelagoClient.ServerData"/> and not a config
+    /// entry.
+    /// </remarks>
+    private static bool OwnsSetting(BoxedValueController controller)
+    {
+        try
+        {
+            // Every hop is a Traverse: ModMenu.Options.Option is internal to Mod Menu, so it
+            // cannot even be named here, let alone its BaseEntry read directly. The entry
+            // itself is BepInEx's own public type, which is where this comes back to C#.
+            Traverse option = Traverse.Create(controller).Field("sourceOption");
+            if (option.GetValue() == null) return false;
+
+            ConfigEntryBase entry = option.Property("BaseEntry").GetValue<ConfigEntryBase>();
+            if (entry == null) return false;
+
+            return entry == RolledTwoHandedWeaponsOverride
+                || entry == NewWeaponChance
+                || entry == GreenMode
+                || entry == GreenModeTintRgb
+                || entry == DebugButtons;
+        }
+        catch (Exception e)
+        {
+            // The field is internal, so it is not part of Mod Menu's API and a future version
+            // may rename it. Claim nothing rather than refreshing somebody else's control.
+            Plugin.BepinLogger.LogWarning(
+                $"Could not read a Mod Menu control's source option; skipping it.{Environment.NewLine}{e}");
+            return false;
+        }
     }
 
     /// <summary>

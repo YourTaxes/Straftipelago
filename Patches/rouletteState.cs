@@ -39,15 +39,77 @@ public class RouletteState
     // check for it has been sent" mean the same thing.
     public List<GameObject> hasKill_Items = new();
 
-    // The starter unlocks from Design_Doc.txt: a pistol plus the stun weapons. Matched
-    // case-insensitively against SpawnerManager.NameToWeaponDict, because the Resources
+    // What the pool falls back to when there is no room to get unlocks from. Connected, NOTHING
+    // is seeded from here: the room's starting_weapon option is pushed as a precollected item
+    // and arrives through ReceiveWeapon like any other unlock, so hardcoding a starter would
+    // hand the player a weapon the multiworld never granted. Offline it is the only thing
+    // keeping the roulette able to roll at all.
+    //
+    // Matched case-insensitively against SpawnerManager.NameToWeaponDict, because the Resources
     // paths are lowercased ("randomweapons/glock") while that dictionary is keyed on each
     // prefab's own GameObject.name, whose casing this mod does not control.
-    private static readonly string[] StarterWeapons = { "glock", "taser", "stungrenade", "stunmine" };
+    private static readonly string[] OfflineFallbackWeapons = { "glock", "taser", "stungrenade", "stunmine" };
+
+    /// <summary>
+    /// Which slot data toggle decides whether an always-unlocked weapon is in the roulette.
+    /// </summary>
+    private enum WeaponGate
+    {
+        /// <summary>The apworld's non_damaging_weapons option.</summary>
+        NonDamaging,
+
+        /// <summary>The apworld's unused_weapons option.</summary>
+        Unused,
+
+        /// <summary>The apworld's useless_weapons option.</summary>
+        Useless,
+    }
+
+    /// <summary>
+    /// The weapons that carry no Archipelago check, and the toggle that gates each one.
+    /// </summary>
+    /// <remarks>
+    /// <para>These are never locked. They are not items in the apworld's table at all, so no
+    /// unlock for them can ever arrive, and leaving one in unowned_items would make it
+    /// permanently unrollable AND unpickable off the floor. Their toggle only decides whether
+    /// they start in the roulette: on puts them straight into hasKill_Items - unlocked and
+    /// already credited, since there is no check to earn - and off leaves them out of every
+    /// list, which keeps them off the roulette while leaving them pickable.</para>
+    /// <para>Several spellings each, because the two sides disagree and neither is authoritative
+    /// here: the apworld names them only in option docstrings ("Tazer", "Stun Grenade") while
+    /// the pools are keyed on the game's own prefab names ("taser", "stungrenade"). Every
+    /// candidate goes through ResolveByAnyName, and an entry that resolves to nothing is
+    /// reported by name so the right spelling can be read out of the log.</para>
+    /// </remarks>
+    private static readonly (WeaponGate Gate, string[] Names)[] AlwaysUnlockedWeapons =
+    {
+        (WeaponGate.NonDamaging, new[] { "propeller" }),
+        (WeaponGate.NonDamaging, new[] { "repulsar" }),
+        (WeaponGate.NonDamaging, new[] { "stungrenade", "Stun Grenade" }),
+        (WeaponGate.NonDamaging, new[] { "stunmine", "Stun Mine" }),
+        (WeaponGate.NonDamaging, new[] { "taser", "tazer" }),
+        (WeaponGate.Unused, new[] { "bublee" }),
+        (WeaponGate.Useless, new[] { "flashlight" }),
+    };
+
+    // Every unlock the room has granted, by the name it granted it under, in arrival order.
+    //
+    // Required rather than convenient. Items start arriving the moment the login succeeds,
+    // which is from the Mod Menu with no scene loaded, so SpawnerManager.AllWeapons does not
+    // exist yet and there is no prefab to move between lists. Reset() also clears all three
+    // lists on every call. This ledger is what survives both, and replaying it is what makes
+    // Reset() reproduce the room's state instead of wiping it.
+    private readonly List<string> receivedWeaponNames = new();
 
     private bool initialized;
+
+    // Held up while Reset() rebuilds. Every Grant it makes would otherwise dump the whole pool,
+    // and Reset() dumps it once itself at the end anyway.
+    private bool suppressPoolLog;
+
     private Dictionary<string, GameObject> nameLookup;
     private Dictionary<string, GameObject> displayNameLookup;
+    private Dictionary<string, GameObject> normalizedLookup;
 
     /// <summary>
     /// Builds the pool once and then never again. This is all PlayerPickup.Awake() is
@@ -76,11 +138,21 @@ public class RouletteState
         SpawnerManager.PopulateAllWeapons();
         GameObject[] allWeapons = SpawnerManager.AllWeapons;
 
+        // Every Grant below would otherwise dump the whole pool, and a room's starting
+        // inventory replayed through here is dozens of grants in a row. One dump, at the end.
+        suppressPoolLog = true;
+
         obtained_Items.Clear();
         unowned_items.Clear();
         hasKill_Items.Clear();
         nameLookup = null;
         displayNameLookup = null;
+        normalizedLookup = null;
+
+        // Resolved before anything is sorted into a list, because it is what decides which
+        // weapons are eligible to be locked at all. The lookups it goes through are built off
+        // SpawnerManager, not off the pools, so they are available this early.
+        Dictionary<GameObject, WeaponGate> alwaysUnlocked = ResolveAlwaysUnlockedWeapons();
 
         if (allWeapons != null)
         {
@@ -88,47 +160,189 @@ public class RouletteState
             {
                 // A null here would later read as a "roll" that silently produces nothing,
                 // which looks exactly like a skewed distribution. Keep them out entirely.
-                if (weapon != null) unowned_items.Add(weapon);
+                if (weapon == null) continue;
+
+                // Unconditionally, whatever the toggle says. These carry no check, so no
+                // unlock for them will ever arrive - locking one would strand it for the
+                // whole seed, unrollable and unpickable both.
+                if (alwaysUnlocked.ContainsKey(weapon)) continue;
+
+                unowned_items.Add(weapon);
             }
         }
 
-        initialized = true;
-        SeedStarters();
+        // Only when there was actually something to build from. Reset() is now reached on
+        // connect too, which happens from the Mod Menu with no scene loaded and therefore no
+        // weapons - and claiming to be initialized there would make the EnsureInitialized() in
+        // PlayerPickup.Awake() skip the real build, leaving the player in a match with an empty
+        // pool for the rest of the session.
+        initialized = allWeapons != null && allWeapons.Length > 0;
+
+        SeedAlwaysUnlocked(alwaysUnlocked);
+        ReplayReceivedItems();
+
+        if (!ArchipelagoClient.Authenticated) SeedOfflineFallback();
+
+        // Last, so it can promote anything the passes above just put in obtained_Items. A kill
+        // the room already has a check for outranks "unlocked but never used".
+        ReplayEarnedKills();
+
+        suppressPoolLog = false;
 
         DiagLog.Log("RouletteState.Reset",
             $"{DiagLog.NetRoles()} AllWeapons={(allWeapons == null ? "NULL" : allWeapons.Length.ToString())} " +
+            $"authenticated={ArchipelagoClient.Authenticated} received={receivedWeaponNames.Count} " +
+            $"checkedLocations={ArchipelagoClient.GetCheckedLocationNames().Count()} " +
+            $"alwaysUnlocked={alwaysUnlocked.Count} " +
             $"unowned={unowned_items.Count} obtained={obtained_Items.Count} hasKill={hasKill_Items.Count}");
         LogPool();
     }
 
     /// <summary>
-    /// Seeds the starting unlocks by NAME. This replaces a hardcoded `unowned_items[30]`,
-    /// which depended on Resources.LoadAll ordering that Unity does not guarantee and threw
-    /// outright on a short list — and a throw here is not survivable, because Reset() is
-    /// reached from a Harmony prefix on PlayerPickup.Awake(), which FishNet generates as
-    ///     NetworkInitialize___Early(); Awake___UserLogic(); NetworkInitialize__Late();
-    /// so throwing skips NetworkInitialize___Early() and that PlayerPickup never registers
-    /// its SyncVars (crash-investigation candidate A2). Nothing below indexes unguarded.
+    /// Resolves <see cref="AlwaysUnlockedWeapons"/> against the weapons this game build actually
+    /// has, reporting every entry that matched nothing.
     /// </summary>
-    private void SeedStarters()
+    private Dictionary<GameObject, WeaponGate> ResolveAlwaysUnlockedWeapons()
     {
-        foreach (string starter in StarterWeapons)
+        var resolved = new Dictionary<GameObject, WeaponGate>();
+
+        foreach ((WeaponGate gate, string[] names) in AlwaysUnlockedWeapons)
+        {
+            GameObject weapon = null;
+            foreach (string name in names)
+            {
+                weapon = ResolveByAnyName(name);
+                if (weapon != null) break;
+            }
+
+            if (weapon == null)
+            {
+                // Named rather than counted, because the spellings in this table are the part
+                // of it this mod is least sure of - three of these weapons appear nowhere else
+                // in the codebase - and the log is how the right one gets found.
+                Plugin.BepinLogger.LogWarning(
+                    $"[RouletteState] no weapon resolved for '{string.Join("' / '", names)}' " +
+                    $"(gated by {gate}); it will be treated as locked like any other weapon.");
+                continue;
+            }
+
+            resolved[weapon] = gate;
+        }
+
+        return resolved;
+    }
+
+    /// <summary>
+    /// Puts the no-check weapons whose toggle the room turned on straight into hasKill_Items.
+    /// </summary>
+    /// <remarks>
+    /// Into hasKill_Items rather than obtained_Items on purpose: obtained_Items is the "no kill
+    /// yet" list that New Weapon Chance draws from, and there is no check to earn with any of
+    /// these, so a weapon sitting there would inflate the new-weapon branch forever with
+    /// something that can never leave it.
+    /// </remarks>
+    private void SeedAlwaysUnlocked(Dictionary<GameObject, WeaponGate> alwaysUnlocked)
+    {
+        foreach (KeyValuePair<GameObject, WeaponGate> entry in alwaysUnlocked)
+        {
+            // Off means it is in NO list. That keeps it out of the roulette, which is all the
+            // option claims to do - it stays pickable off the floor, because IsUnobtainable
+            // only refuses what is in unowned_items.
+            if (!IsGateOpen(entry.Value)) continue;
+
+            if (!hasKill_Items.Contains(entry.Key)) hasKill_Items.Add(entry.Key);
+        }
+    }
+
+    /// <summary>Whether the room's slot data turned this group of no-check weapons on.</summary>
+    private static bool IsGateOpen(WeaponGate gate)
+    {
+        ArchipelagoData serverData = ArchipelagoClient.ServerData;
+        if (serverData == null) return false;
+
+        switch (gate)
+        {
+            case WeaponGate.NonDamaging: return serverData.NonDamagingWeapons;
+            case WeaponGate.Unused: return serverData.UnusedWeapons;
+            case WeaponGate.Useless: return serverData.UselessWeapons;
+            default: return false;
+        }
+    }
+
+    /// <summary>
+    /// Re-grants every unlock the room has already sent. Reset() clears the pools, so without
+    /// this a pool rebuild would silently take the player's whole multiworld progress away.
+    /// </summary>
+    private void ReplayReceivedItems()
+    {
+        foreach (string weaponName in receivedWeaponNames)
+        {
+            if (!GrantByName(weaponName))
+            {
+                // Not necessarily a failure: a name that is already granted also answers false,
+                // and so does one whose weapon this build does not have. Logged at debug so a
+                // long inventory does not bury the pool dump that follows.
+                Plugin.BepinLogger.LogDebug(
+                    $"[RouletteState] replaying received item '{weaponName}' granted nothing.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Seeds a starting pool for a session with no room behind it, so the roulette still works
+    /// offline. Only reached when not authenticated — connected, every unlock comes from the
+    /// multiworld, including the one the room's starting_weapon option precollected.
+    /// </summary>
+    /// <remarks>
+    /// Nothing in here may throw. Reset() is reached from a Harmony prefix on
+    /// PlayerPickup.Awake(), which FishNet generates as
+    ///     NetworkInitialize___Early(); Awake___UserLogic(); NetworkInitialize__Late();
+    /// so throwing skips NetworkInitialize___Early() and that PlayerPickup never registers its
+    /// SyncVars (crash-investigation candidate A2). Nothing below indexes unguarded.
+    /// </remarks>
+    private void SeedOfflineFallback()
+    {
+        foreach (string starter in OfflineFallbackWeapons)
         {
             if (!GrantByName(starter))
             {
                 Plugin.BepinLogger.LogWarning(
-                    $"[RouletteState] starter weapon '{starter}' did not resolve through " +
-                    "SpawnerManager.NameToWeaponDict; skipping it.");
+                    $"[RouletteState] offline fallback weapon '{starter}' did not resolve to a " +
+                    "weapon in this build; skipping it.");
             }
         }
 
-        if (obtained_Items.Count == 0 && unowned_items.Count > 0)
+        if (obtained_Items.Count == 0 && hasKill_Items.Count == 0 && unowned_items.Count > 0)
         {
             Plugin.BepinLogger.LogWarning(
-                "[RouletteState] no starter weapon resolved by name; falling back to the first " +
-                "entry in the weapon list so the pool is never empty.");
+                "[RouletteState] no offline fallback weapon resolved by name; falling back to the " +
+                "first entry in the weapon list so the pool is never empty.");
             Grant(unowned_items[0]);
         }
+    }
+
+    /// <summary>
+    /// Records an unlock the room granted and applies it, now if the pool is up and on the next
+    /// <see cref="Reset"/> otherwise.
+    /// </summary>
+    /// <remarks>
+    /// Both halves matter. Items start arriving the instant the login succeeds, which is from
+    /// the Mod Menu with no scene loaded and therefore no SpawnerManager to resolve them
+    /// against - so the name is banked first and granted second. Must be called on the main
+    /// thread; the receipt itself arrives on the Archipelago client's websocket thread.
+    /// </remarks>
+    /// <returns>True if the weapon moved into the pool during this call.</returns>
+    public bool ReceiveWeapon(string weaponName)
+    {
+        if (string.IsNullOrEmpty(weaponName)) return false;
+
+        receivedWeaponNames.Add(weaponName);
+
+        // Not EnsureInitialized(): out of a match SpawnerManager has no weapons, and building
+        // the pool off an empty list would set initialized and leave it that way.
+        if (!initialized) return false;
+
+        return GrantByName(weaponName);
     }
 
     /// <summary>The single mutation point for the pool. Also the seam for a future Archipelago hook.</summary>
@@ -147,10 +361,14 @@ public class RouletteState
         return true;
     }
 
-    /// <summary>Name-keyed grant — what an Archipelago item receipt will eventually call.</summary>
+    /// <summary>Name-keyed grant — what an Archipelago item receipt calls.</summary>
+    /// <remarks>
+    /// ResolveByAnyName rather than Lookup, because the names reaching this are the room's item
+    /// names, which are neither of the two namespaces the pools are keyed on.
+    /// </remarks>
     public bool GrantByName(string weaponName)
     {
-        GameObject weapon = Lookup(weaponName);
+        GameObject weapon = ResolveByAnyName(weaponName);
         return weapon != null && Grant(weapon);
     }
 
@@ -245,11 +463,76 @@ public class RouletteState
     }
 
     /// <summary>
-    /// Resolves any name this mod might be handed - a prefab name or a display name - to the
-    /// pool entry it belongs to.
+    /// Resolves any name this mod might be handed - a prefab name, a display name, or an
+    /// Archipelago item name - to the pool entry it belongs to.
     /// </summary>
+    /// <remarks>
+    /// The two exact lookups come first and the punctuation-insensitive one last, so an exact
+    /// match is never lost to a fuzzy one.
+    /// </remarks>
     public GameObject ResolveByAnyName(string weaponName) =>
-        Lookup(weaponName) ?? LookupByDisplayName(weaponName);
+        Lookup(weaponName) ?? LookupByDisplayName(weaponName) ?? LookupByNormalizedName(weaponName);
+
+    /// <summary>
+    /// Lookup with case, spaces, hyphens and underscores all ignored.
+    /// </summary>
+    /// <remarks>
+    /// This is what makes the room's item names land. Archipelago names a weapon the way a
+    /// person writes it — "Dual Launcher", "AAA-12", "Hill H15", "Sawed Off" — while the
+    /// prefabs squash the same names into "DualLauncher" and "AAA12", so neither exact lookup
+    /// can match them. Built over both namespaces, so an item name that happens to be spelled
+    /// like the display name still resolves through the same pass.
+    /// </remarks>
+    public GameObject LookupByNormalizedName(string weaponName)
+    {
+        string key = Normalize(weaponName);
+        if (string.IsNullOrEmpty(key)) return null;
+
+        if (normalizedLookup == null)
+        {
+            GameObject[] allWeapons = SpawnerManager.AllWeapons;
+            if (allWeapons == null) return null;
+
+            normalizedLookup = new Dictionary<string, GameObject>(StringComparer.Ordinal);
+            foreach (GameObject weapon in allWeapons)
+            {
+                if (weapon == null) continue;
+
+                // Prefab name first so that it wins a collision, matching the precedence
+                // ResolveByAnyName uses between the two exact lookups.
+                Add(weapon.name, weapon);
+                Add(weapon.GetComponent<ItemBehaviour>()?.weaponName, weapon);
+            }
+
+            void Add(string name, GameObject weapon)
+            {
+                string normalized = Normalize(name);
+                if (string.IsNullOrEmpty(normalized)) return;
+
+                // Silently first-wins, unlike LookupByDisplayName's reported collision:
+                // squashing punctuation is expected to make names collide - a prefab and its
+                // own display name almost always normalize to the same string - so a warning
+                // here would fire for nearly every weapon in the game.
+                if (!normalizedLookup.ContainsKey(normalized)) normalizedLookup[normalized] = weapon;
+            }
+        }
+
+        return normalizedLookup.TryGetValue(key, out GameObject match) ? match : null;
+    }
+
+    /// <summary>Lowercases and strips everything that is not a letter or a digit.</summary>
+    private static string Normalize(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return null;
+
+        var normalized = new System.Text.StringBuilder(name.Length);
+        foreach (char character in name)
+        {
+            if (char.IsLetterOrDigit(character)) normalized.Append(char.ToLowerInvariant(character));
+        }
+
+        return normalized.ToString();
+    }
 
     /// <summary>
     /// Maps a live item in the world back to the prefab the pools hold, or null when it is
@@ -341,6 +624,42 @@ public class RouletteState
         hasKill_Items.Add(prefab);
         LogPool();
         return prefab;
+    }
+
+    /// <summary>
+    /// Re-earns every first kill the room has a check for, after the grants have run.
+    /// </summary>
+    /// <remarks>
+    /// <para>The room is the record, not a list kept here. Every first kill is a location check
+    /// and the server remembers which locations this slot has completed, so asking it is the
+    /// only source that survives a disconnect, a rejoin, or the game being closed and
+    /// reopened - a local ledger would only have covered the current process.</para>
+    /// <para>Deliberately not a loop over RecordKill: that sends the check, and these checks
+    /// are exactly the ones already sent. This only puts each weapon back in the list its check
+    /// says it belongs in.</para>
+    /// <para>Location names, not item names. The two differ in this apworld - the locations are
+    /// named after the weapon whose first kill they are - so anything that does not resolve is
+    /// reported at debug rather than treated as an error.</para>
+    /// </remarks>
+    private void ReplayEarnedKills()
+    {
+        foreach (string locationName in ArchipelagoClient.GetCheckedLocationNames())
+        {
+            GameObject prefab = ResolveByAnyName(locationName);
+            if (prefab == null)
+            {
+                Plugin.BepinLogger.LogDebug(
+                    $"[RouletteState] checked location '{locationName}' is not a weapon in this " +
+                    "build; no kill credited for it.");
+                continue;
+            }
+
+            if (hasKill_Items.Contains(prefab)) continue;
+
+            unowned_items.Remove(prefab);
+            obtained_Items.Remove(prefab);
+            hasKill_Items.Add(prefab);
+        }
     }
 
     /// <summary>
@@ -527,6 +846,9 @@ public class RouletteState
     /// <summary>Numbered dump of the local player's unlocks. Called on every change and every roll.</summary>
     public void LogPool()
     {
+        // A rebuild makes many changes in a row and dumps the result itself once it is done.
+        if (suppressPoolLog) return;
+
         string obtainedList = string.Join(Environment.NewLine,
             obtained_Items.Select((item, index) => $"  [{index}] {(item == null ? "null" : item.name)}"));
         string killList = string.Join(Environment.NewLine,
