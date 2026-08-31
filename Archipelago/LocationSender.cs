@@ -1,4 +1,5 @@
 using System;
+using UnityEngine;
 using Straftapelago.Finnegan_McD.org.Patches;
 
 namespace Straftapelago.Finnegan_McD.org.Archipelago;
@@ -36,15 +37,38 @@ public enum LocationSendResult
 /// <remarks>
 /// <see cref="RouletteState.RecordKill"/> decides WHEN a check is earned (the first kill with
 /// a weapon the player has unlocked, suicides excluded); this decides what that means to the
-/// room. The location names are the weapon names as the apworld spells them - the Straftat
-/// apworld gives every weapon one location, named after the weapon - so the only translation
-/// needed is name to id, which <see cref="ArchipelagoClient.ResolveLocationId"/> does.
+/// room. The Straftat apworld gives every weapon one location named after the weapon, so the
+/// translation is two steps: the weapon's name to the spelling the apworld uses, which
+/// <see cref="LocationNameFor"/> does, and that name to an id, which
+/// <see cref="ArchipelagoClient.ResolveLocationId"/> does.
 /// </remarks>
 public static class LocationSender
 {
+    /// <summary>
+    /// The name the room knows a weapon by.
+    /// </summary>
+    /// <remarks>
+    /// The apworld's LOCATION_NAME_TO_ID is keyed on the game's PREFAB names - "AK-K",
+    /// "Nugget", "DF_Blister" - and several of those are nothing like what the game displays
+    /// for the same weapon ("ak", "serac"). Sending what the player sees is what made
+    /// /ap_completecheck ak report that the room had no such location: it is called "AK-K"
+    /// there. Anything the pool can resolve therefore goes out under its prefab's name, which
+    /// is the one spelling both halves agree on.
+    ///
+    /// A name the pool cannot resolve is passed through untouched rather than refused here -
+    /// the pool is empty until a player object has come up, and ResolveLocationId is a better
+    /// judge of what the room has than a pool that may not be built yet.
+    /// </remarks>
+    private static string LocationNameFor(string weaponName)
+    {
+        GameObject prefab = Plugin.RouletteState?.ResolveByAnyName(weaponName);
+        return prefab == null ? weaponName : prefab.name;
+    }
+
     /// <param name="weapon_name">
-    /// The weapon the player just got their first kill with, as the game names it
-    /// (ItemBehaviour.weaponName), which is what the apworld's location names are keyed on.
+    /// The weapon the player just got their first kill with. Either namespace works - the
+    /// prefab name or the name the game displays - because <see cref="LocationNameFor"/>
+    /// puts it into the apworld's spelling before it is looked up.
     /// </param>
     /// <returns>What happened, for a caller that wants to report it.</returns>
     public static LocationSendResult Send_Location(string weapon_name)
@@ -69,15 +93,19 @@ public static class LocationSender
                 return LocationSendResult.NotConnected;
             }
 
-            long locationId = client.ResolveLocationId(weapon_name);
+            string locationName = LocationNameFor(weapon_name);
+
+            long locationId = client.ResolveLocationId(locationName);
             if (locationId < 0)
             {
                 // The mod and the apworld disagree about a weapon's name. Worth a loud line:
                 // it means that weapon's check can never be sent, and no amount of playing
-                // will fix it.
+                // will fix it. Both spellings are printed because the fix is to make the
+                // apworld's LOCATION_NAME_TO_ID agree with the prefab name.
                 Plugin.BepinLogger.LogWarning(
-                    $"[Archipelago] the room has no location named '{weapon_name}', so its check " +
-                    "cannot be sent. The mod's weapon name and the apworld's location name differ.");
+                    $"[Archipelago] the room has no location named '{locationName}', so the check " +
+                    $"for '{weapon_name}' cannot be sent. The game's prefab name and the apworld's " +
+                    "location name differ.");
                 return LocationSendResult.UnknownLocation;
             }
 
@@ -93,7 +121,7 @@ public static class LocationSender
             ArchipelagoClient.ServerData.CheckedLocations.Add(locationId);
 
             Plugin.BepinLogger.LogInfo(
-                $"[Archipelago] sent the check for '{weapon_name}' (location id {locationId}).");
+                $"[Archipelago] sent the check for '{weapon_name}' as location '{locationName}' (id {locationId}).");
             return LocationSendResult.Sent;
         }
         catch (Exception error)

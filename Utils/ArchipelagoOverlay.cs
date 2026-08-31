@@ -227,7 +227,13 @@ internal class ArchipelagoOverlay : MonoBehaviour
                 // U+2713. If a future Unity build's default GUI font does not carry it the
                 // entry shows a box, in which case swap this for a plain "*".
                 string killMark = i >= firstKillEarned ? " ✓" : "";
-                text = $"{i + 1}. {(weapon == null ? "<missing>" : weapon.name)}{killMark}";
+
+                // DisplayNameOf, not weapon.name: the pool is keyed on prefab names, and
+                // several of those are nothing like what the game calls the weapon on screen -
+                // the prefab named "Nugget" is the serac, "AK-K" is the ak. This panel is read
+                // next to the game, so it spells them the way the game does. DisplayNameOf
+                // falls back to the prefab name for anything carrying no ItemBehaviour.
+                text = $"{i + 1}. {(weapon == null ? "<missing>" : RouletteState.DisplayNameOf(weapon))}{killMark}";
             }
 
             GUI.Label(new Rect(entryLeft, entryTop, entryWidth, entryHeight), text, style);

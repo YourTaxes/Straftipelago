@@ -29,6 +29,16 @@ public class ArchipelagoClient
     private ArchipelagoSession session;
 
     /// <summary>
+    /// Whether this slot is currently marked ready with the room, toggled by /ap_ready.
+    /// </summary>
+    /// <remarks>
+    /// Tracked here because readiness is a fire-and-forget StatusUpdate packet - the server
+    /// keeps the status but never reports it back, so nothing else on this side knows which
+    /// way the next toggle should go. Cleared on disconnect, so a new room starts unready.
+    /// </remarks>
+    private bool ready;
+
+    /// <summary>
     /// call to connect to an Archipelago session. Connection info should already be set up on ServerData
     /// </summary>
     /// <returns></returns>
@@ -211,6 +221,7 @@ public class ArchipelagoClient
         session = null;
         locationIdsByName = null;
         Authenticated = false;
+        ready = false;
 
         // So a socket that drops and is reconnected goes through the same replay-suppressing
         // open as a first connect, rather than inheriting the last session's answer.
@@ -220,6 +231,22 @@ public class ArchipelagoClient
     public void SendMessage(string message)
     {
         session.Socket.SendPacketAsync(new SayPacket { Text = message });
+    }
+
+    /// <summary>
+    /// Flips this slot between ready and not ready with the room, and reports which it now is.
+    /// </summary>
+    /// <remarks>
+    /// The same thing the Archipelago text client's /ready does: a StatusUpdate packet
+    /// carrying ClientReady or, to take it back, ClientConnected. It is not a !command, so it
+    /// does not go through <see cref="SendMessage"/> and the room prints no reply to it.
+    /// </remarks>
+    /// <returns>true when this slot is now ready, false when it has just been unreadied.</returns>
+    public bool ToggleReady()
+    {
+        ready = !ready;
+        session.SetClientState(ready ? ArchipelagoClientState.ClientReady : ArchipelagoClientState.ClientConnected);
+        return ready;
     }
 
     /// <summary>

@@ -99,6 +99,33 @@ public static class ArchipelagoChatCommands
     public static void Admin(string command = "") => Send("admin", command);
 
     /// <summary>
+    /// Toggles this slot's ready status with the room, the way the Archipelago text client's
+    /// /ready does.
+    /// </summary>
+    /// <remarks>
+    /// <para>Not a server !command - it does not go through <see cref="Send"/>. Readiness is a
+    /// StatusUpdate packet, which is what <see cref="ArchipelagoClient.ToggleReady"/> sends.</para>
+    /// <para>It is also the one command here that prints its own answer: the room acknowledges
+    /// a status update with nothing at all, so without this line there would be no sign the
+    /// command did anything.</para>
+    /// </remarks>
+    [Command("ap_ready", "Toggle your ready status with the room, like the text client's /ready.")]
+    public static void Ready()
+    {
+        if (Plugin.ArchipelagoClient == null)
+        {
+            throw new CommandException("The Archipelago client failed to initialize.");
+        }
+
+        if (!ArchipelagoClient.Authenticated)
+        {
+            throw new CommandException("Not connected to an Archipelago room. Connect from the mod menu first.");
+        }
+
+        ArchipelagoConsole.LogMessage(Plugin.ArchipelagoClient.ToggleReady() ? "Readied up." : "Unreadied.");
+    }
+
+    /// <summary>
     /// Completes a weapon's check by hand: the same thing the first kill with that weapon
     /// does, without the kill.
     /// </summary>
@@ -158,9 +185,12 @@ public static class ArchipelagoChatCommands
                     "its check to. Connect from the mod menu first.");
 
             case LocationSendResult.UnknownLocation:
+                // The name in this message is the one the player typed, not the one that was
+                // actually looked up - the prefab name the send uses is in the warning
+                // LocationSender logs, and is of no use to somebody who has never seen it.
                 throw new CommandException(
-                    $"The room has no location called '{locationName}'. Check the apworld names " +
-                    "this weapon the same way the game does.");
+                    $"The room has no location for '{locationName}'. The apworld and this build " +
+                    "of the game disagree about that weapon's name; see LogOutput.log for both.");
 
             default:
                 throw new CommandException(
