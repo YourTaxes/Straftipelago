@@ -346,7 +346,22 @@ public class ArchipelagoClient
             $"FROM {receivedItem.Player} playing {receivedItem.ItemGame} " +
             $"AT {receivedItem.LocationDisplayName} (location id {receivedItem.LocationId})");
 
-        ApplyReceivedItem(receivedItem.ItemDisplayName);
+        ApplyReceivedItem(receivedItem.ItemDisplayName, DescribeSender(receivedItem.Player));
+    }
+
+    /// <summary>
+    /// The name to blame for an item, as the lobby should see it.
+    /// </summary>
+    /// <remarks>
+    /// Alias first because that is the name the rest of the room is calling that slot - it is
+    /// what the server's own messages use, and it falls back to the slot name on its own when
+    /// nobody set one. Name is only reached if the alias is missing outright.
+    /// </remarks>
+    private static string DescribeSender(PlayerInfo sender)
+    {
+        if (sender == null) return null;
+
+        return string.IsNullOrWhiteSpace(sender.Alias) ? sender.Name : sender.Alias;
     }
 
     /// <summary>
@@ -405,7 +420,10 @@ public class ArchipelagoClient
     /// thread: granting a weapon resolves it against SpawnerManager, and both filler items
     /// touch the local player.
     /// </remarks>
-    private void ApplyReceivedItem(string itemName)
+    /// <param name="itemName">The item's display name, which is what the switch below matches.</param>
+    /// <param name="sender">The slot that sent it, carried only so a Death trap can name whoever
+    /// aimed it here.</param>
+    private void ApplyReceivedItem(string itemName, string sender)
     {
         if (string.IsNullOrEmpty(itemName)) return;
 
@@ -417,7 +435,7 @@ public class ArchipelagoClient
                 // Through the DeathLink handler's own queue rather than a second kill path, so
                 // the trap inherits its suppressNextDeath latch - without which the death it
                 // causes would be reported straight back out as a fresh death link.
-                MainThreadActions.Enqueue(() => DeathLinkHandler?.EnqueueTrapDeath());
+                MainThreadActions.Enqueue(() => DeathLinkHandler?.EnqueueTrapDeath(sender));
                 return;
 
             case HealthBuffItem:

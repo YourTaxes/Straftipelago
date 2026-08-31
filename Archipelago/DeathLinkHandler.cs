@@ -17,11 +17,18 @@ public class DeathLinkHandler
 
     /// <summary>
     /// What the lobby is told when the death came from a Death trap rather than another world.
-    /// {0} is the local player. Separate from <see cref="BroadcastFormat"/> because there is no
-    /// slot to blame - the room did this on purpose.
+    /// {0} is the Archipelago slot that sent the trap, {1} is the local player. Separate from
+    /// <see cref="BroadcastFormat"/> because a trap was aimed here on purpose - the sender is
+    /// the one to point at, not the one who died somewhere else.
     /// </summary>
     private const string TrapBroadcastFormat =
-        "Archipelago sent {0} a Death trap - everybody point and laugh at {0}";
+        "{0} sent {1} a death trap; Everybody point and laugh at {0}";
+
+    /// <summary>
+    /// Stands in for the sender when a trap arrives without a usable slot name, so the line
+    /// still reads as a sentence instead of blaming an empty string.
+    /// </summary>
+    private const string UnknownTrapSender = "Archipelago";
 
     /// <summary>
     /// One death waiting to be applied, and where it came from.
@@ -33,16 +40,23 @@ public class DeathLinkHandler
     /// </remarks>
     private readonly struct PendingDeath
     {
-        public PendingDeath(DeathLink link, bool isTrap)
+        public PendingDeath(DeathLink link, string trapSender)
         {
             Link = link;
-            IsTrap = isTrap;
+            TrapSender = trapSender;
         }
 
         /// <summary>The multiworld death that caused this. Null for a trap.</summary>
         public DeathLink Link { get; }
 
-        public bool IsTrap { get; }
+        /// <summary>
+        /// The Archipelago slot that sent the Death trap, or null when this is a received death
+        /// rather than a trap. Carried per-death rather than read at announce time because the
+        /// queue can hold more than one, from more than one sender.
+        /// </summary>
+        public string TrapSender { get; }
+
+        public bool IsTrap => TrapSender != null;
     }
 
     private bool deathLinkEnabled;
@@ -116,7 +130,7 @@ public class DeathLinkHandler
         // PlayerHealthDeathLinkKillPatch drains it.
         lock (deathLinks)
         {
-            deathLinks.Enqueue(new PendingDeath(deathLink, false));
+            deathLinks.Enqueue(new PendingDeath(deathLink, null));
         }
 
         Plugin.BepinLogger.LogDebug(deathLink.Cause.IsNullOrWhiteSpace()
@@ -135,14 +149,20 @@ public class DeathLinkHandler
     /// multiworld as a fresh death of ours, killing every linked world for a trap that was only
     /// ever meant for this one.
     /// </remarks>
-    public void EnqueueTrapDeath()
+    /// <param name="sender">The Archipelago slot that sent the trap, for the line the lobby is
+    /// shown. Blank or null falls back to <see cref="UnknownTrapSender"/>.</param>
+    public void EnqueueTrapDeath(string sender)
     {
+        // Normalized here rather than at announce time so that TrapSender is never null for a
+        // trap - that is what PendingDeath.IsTrap reads to tell the two kinds of death apart.
+        string trapSender = sender.IsNullOrWhiteSpace() ? UnknownTrapSender : sender;
+
         lock (deathLinks)
         {
-            deathLinks.Enqueue(new PendingDeath(null, true));
+            deathLinks.Enqueue(new PendingDeath(null, trapSender));
         }
 
-        Plugin.BepinLogger.LogDebug("[DeathLink] queued a Death trap from the room");
+        Plugin.BepinLogger.LogDebug($"[DeathLink] queued a Death trap from {trapSender}");
     }
 
     /// <summary>
@@ -189,7 +209,7 @@ public class DeathLinkHandler
 
             DeathLink deathLink = pendingDeath.Link;
             string cause = pendingDeath.IsTrap
-                ? "Received a Death trap from the room"
+                ? $"Received a Death trap from {pendingDeath.TrapSender}"
                 : deathLink.Cause.IsNullOrWhiteSpace() ? GetDeathLinkCause(deathLink) : deathLink.Cause;
 
             Plugin.BepinLogger.LogMessage(cause);
@@ -210,7 +230,7 @@ public class DeathLinkHandler
             playerHealth.controller.DespawnObject(playerHealth.gameObject);
 
             Broadcast(pendingDeath.IsTrap
-                ? string.Format(TrapBroadcastFormat, KillFeed.LocalPlayerName)
+                ? string.Format(TrapBroadcastFormat, pendingDeath.TrapSender, KillFeed.LocalPlayerName)
                 : string.Format(BroadcastFormat, deathLink.Source, KillFeed.LocalPlayerName));
         }
         catch (Exception e)

@@ -45,10 +45,20 @@ public class RouletteState
     // hand the player a weapon the multiworld never granted. Offline it is the only thing
     // keeping the roulette able to roll at all.
     //
+    // Split by which list they land in. The Glock is the one weapon the player is meant to be
+    // working ON, so it goes to obtained_Items where New Weapon Chance can draw it as a weapon
+    // with no kill yet. The stun weapons and the propeller cannot earn a check at all, so they
+    // go straight to hasKill_Items - the same treatment the room's non_damaging_weapons toggle
+    // gives them when connected, and for the same reason: parked in obtained_Items they would
+    // inflate the new-weapon branch forever with something that can never leave it.
+    //
     // Matched case-insensitively against SpawnerManager.NameToWeaponDict, because the Resources
     // paths are lowercased ("randomweapons/glock") while that dictionary is keyed on each
     // prefab's own GameObject.name, whose casing this mod does not control.
-    private static readonly string[] OfflineFallbackWeapons = { "glock", "taser", "stungrenade", "stunmine" };
+    private static readonly string[] OfflineFallbackNewWeapons = { "glock" };
+
+    private static readonly string[] OfflineFallbackEarnedWeapons =
+        { "taser", "stungrenade", "stunmine", "propeller" };
 
     /// <summary>
     /// Which slot data toggle decides whether an always-unlocked weapon is in the roulette.
@@ -302,7 +312,7 @@ public class RouletteState
     /// </remarks>
     private void SeedOfflineFallback()
     {
-        foreach (string starter in OfflineFallbackWeapons)
+        foreach (string starter in OfflineFallbackNewWeapons)
         {
             if (!GrantByName(starter))
             {
@@ -310,6 +320,20 @@ public class RouletteState
                     $"[RouletteState] offline fallback weapon '{starter}' did not resolve to a " +
                     "weapon in this build; skipping it.");
             }
+        }
+
+        foreach (string starter in OfflineFallbackEarnedWeapons)
+        {
+            GameObject prefab = ResolveByAnyName(starter);
+            if (prefab == null)
+            {
+                Plugin.BepinLogger.LogWarning(
+                    $"[RouletteState] offline fallback weapon '{starter}' did not resolve to a " +
+                    "weapon in this build; skipping it.");
+                continue;
+            }
+
+            MoveToHasKill(prefab);
         }
 
         if (obtained_Items.Count == 0 && hasKill_Items.Count == 0 && unowned_items.Count > 0)
@@ -630,13 +654,10 @@ public class RouletteState
         GameObject prefab = ResolveByAnyName(weaponName);
         if (prefab == null) return null;
 
-        // Already earned: still a success for the caller, but nothing to move, and adding it
-        // again would give it two entries and double its odds in a roll.
-        if (hasKill_Items.Contains(prefab)) return prefab;
-
-        unowned_items.Remove(prefab);
-        obtained_Items.Remove(prefab);
-        hasKill_Items.Add(prefab);
+        // Already earned is still a success for the caller, which is why the no-op case answers
+        // the prefab rather than null. MoveToHasKill is what refuses the duplicate - adding it
+        // twice would give it two entries and double its odds in a roll.
+        MoveToHasKill(prefab);
         LogPool();
         return prefab;
     }
@@ -669,12 +690,25 @@ public class RouletteState
                 continue;
             }
 
-            if (hasKill_Items.Contains(prefab)) continue;
-
-            unowned_items.Remove(prefab);
-            obtained_Items.Remove(prefab);
-            hasKill_Items.Add(prefab);
+            MoveToHasKill(prefab);
         }
+    }
+
+    /// <summary>
+    /// Puts a weapon in hasKill_Items whatever list it is in now, without sending a check.
+    /// </summary>
+    /// <remarks>
+    /// The rebuild's version of <see cref="MarkKillEarned"/>: same move, but it neither logs the
+    /// pool per weapon (Reset dumps it once at the end) nor claims a kill happened. Used both
+    /// for the checks the room already has and for the offline weapons that can never earn one.
+    /// </remarks>
+    private void MoveToHasKill(GameObject prefab)
+    {
+        if (prefab == null || hasKill_Items.Contains(prefab)) return;
+
+        unowned_items.Remove(prefab);
+        obtained_Items.Remove(prefab);
+        hasKill_Items.Add(prefab);
     }
 
     /// <summary>
