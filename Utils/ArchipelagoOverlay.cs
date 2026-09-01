@@ -41,6 +41,9 @@ internal class ArchipelagoOverlay : MonoBehaviour
     private const float EntryHeightFraction = 0.022f;
     private const float EntryFontFraction = 0.016f;
 
+    /// <summary>Gap between the progress box's two columns. Matches the weapon list's own.</summary>
+    private const float ColumnGapFraction = 0.008f;
+
     /// <summary>Unity fake-null once destroyed, which is what drives re-creation.</summary>
     private static ArchipelagoOverlay instance;
 
@@ -147,8 +150,10 @@ internal class ArchipelagoOverlay : MonoBehaviour
     }
 
     /// <summary>
-    /// The two numbers that say how the run is going, in a block directly above the weapon
-    /// list: takes won, and how much of the weapon roster has actually been earned.
+    /// The numbers that say how the run is going, in a block directly above the weapon list.
+    /// Left column: takes won, how much of the weapon roster has actually been earned, and
+    /// rounds won. Right column: the DeathLink counter, which is
+    /// <see cref="DeathLinkLines"/>'s.
     /// </summary>
     /// <remarks>
     /// <para>The three lines have deliberately different spans, which is why each says its own.
@@ -209,13 +214,19 @@ internal class ArchipelagoOverlay : MonoBehaviour
             ? $"Rounds won this session: {TakeTracker.RoundsWon} / {serverData.RoundChecks} checks"
             : $"Rounds won this session: {TakeTracker.RoundsWon}"));
 
+        List<string> deathLinkLines = DeathLinkLines(showGoals);
+
         // Packed to the width the longest line needs, with room for the tick that a met goal
-        // adds to the end of it, and capped to the same left-half budget the weapon list keeps
-        // to so it can never cover the pause menu either.
-        float entryWidth = Mathf.Min(Screen.width * 0.21f,
-            Screen.width * 0.5f - panelLeft - panelPadding * 2f);
-        float panelWidth = entryWidth + panelPadding * 2f;
-        float panelHeight = headerHeight + lines.Count * entryHeight + entryHeight * 0.5f;
+        // adds to the end of it, and capped so both columns together still fit the same
+        // left-half budget the weapon list keeps to - neither may cover the pause menu.
+        float columnGap = Screen.width * ColumnGapFraction;
+        float columnsBudget = Screen.width * 0.5f - panelLeft - panelPadding * 2f;
+        float entryWidth = Mathf.Min(Screen.width * 0.21f, (columnsBudget - columnGap) * 0.5f);
+        float panelWidth = entryWidth * 2f + columnGap + panelPadding * 2f;
+
+        // The taller column decides the height, so neither can run out of the box.
+        int rowCount = Mathf.Max(lines.Count, deathLinkLines.Count);
+        float panelHeight = headerHeight + rowCount * entryHeight + entryHeight * 0.5f;
 
         // Bottom-anchored to the weapon list rather than given a top of its own, so the gap
         // between the two blocks stays put whatever this one ends up containing.
@@ -225,9 +236,12 @@ internal class ArchipelagoOverlay : MonoBehaviour
 
         GUIStyle style = EntryStyle();
         float entryLeft = panelLeft + panelPadding;
+        float deathLinkLeft = entryLeft + entryWidth + columnGap;
+        float headerTop = panelTop + entryHeight * 0.25f;
+        float firstEntryTop = panelTop + headerHeight;
 
-        GUI.Label(new Rect(entryLeft, panelTop + entryHeight * 0.25f, entryWidth, headerHeight),
-            "Progress", style);
+        GUI.Label(new Rect(entryLeft, headerTop, entryWidth, headerHeight), "Progress", style);
+        GUI.Label(new Rect(deathLinkLeft, headerTop, entryWidth, headerHeight), "Deathlink", style);
 
         for (int i = 0; i < lines.Count; i++)
         {
@@ -235,9 +249,64 @@ internal class ArchipelagoOverlay : MonoBehaviour
             // that has earned its check.
             string text = lines[i].Achieved ? $"{lines[i].Text} ✓" : lines[i].Text;
 
-            GUI.Label(new Rect(entryLeft, panelTop + headerHeight + i * entryHeight, entryWidth, entryHeight),
+            GUI.Label(new Rect(entryLeft, firstEntryTop + i * entryHeight, entryWidth, entryHeight),
                 text, style);
         }
+
+        for (int i = 0; i < deathLinkLines.Count; i++)
+        {
+            GUI.Label(new Rect(deathLinkLeft, firstEntryTop + i * entryHeight, entryWidth, entryHeight),
+                deathLinkLines[i], style);
+        }
+    }
+
+    /// <summary>
+    /// The second column of the progress box: how close the local player is to sending their
+    /// next death out to the multiworld.
+    /// </summary>
+    /// <remarks>
+    /// <para>The counter is the handler's own, not a copy kept here, so what is shown is exactly
+    /// what decides the next send. Both are read on the main thread - this is OnGUI, and the
+    /// counter only ever moves in PlayerHealth.Update - so the number cannot be caught
+    /// mid-change.</para>
+    /// <para>The handler is built out of the session's DeathLinkService, so it exists only from
+    /// a successful login onwards. Before that the column says so rather than reading the
+    /// DeathLink values out of ServerData: offline those are the apworld's defaults, or the last
+    /// room's answer still sitting there, and neither is a setting anyone agreed to.</para>
+    /// </remarks>
+    private static List<string> DeathLinkLines(bool connected)
+    {
+        var lines = new List<string>();
+
+        DeathLinkHandler handler = Plugin.ArchipelagoClient?.DeathLinkHandler;
+
+        if (!connected || handler == null)
+        {
+            // Not "off": offline the value in ServerData is only the apworld's default, or the
+            // last room's answer still sitting there, and neither is this session's setting.
+            lines.Add("Not connected to a room");
+            return lines;
+        }
+
+        if (!handler.DeathLinkEnabled)
+        {
+            lines.Add("Off for this slot");
+            return lines;
+        }
+
+        int perLink = handler.DeathsPerLink;
+
+        lines.Add(perLink == 1
+            ? "On: every death is shared"
+            : $"On: 1 death shared per {perLink}");
+
+        // The counter itself. Shown as a fraction rather than a countdown so it reads the same
+        // way as the weapons line in the column beside it; the death that would complete the
+        // fraction is the one that is sent, so it resets to 0 rather than ever displaying full.
+        lines.Add($"Deaths toward next link: {handler.DeathsTowardNextLink} / {perLink}");
+        lines.Add($"Deaths shared this session: {handler.DeathLinksSent}");
+
+        return lines;
     }
 
     /// <summary>The one label style both panels draw with, so they cannot drift apart.</summary>

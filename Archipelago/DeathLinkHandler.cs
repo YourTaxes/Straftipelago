@@ -64,6 +64,38 @@ public class DeathLinkHandler
     private readonly DeathLinkService service;
 
     /// <summary>
+    /// How many local deaths it takes to send one out - the room's DeathsPerLink option, taken
+    /// once at construction because that is the connect that carried the slot data it came from.
+    /// </summary>
+    private readonly int deathsPerLink;
+
+    /// <summary>
+    /// Local deaths counted since the last one was shared. Only ever touched from Unity's main
+    /// thread - <see cref="LocalPlayerDied"/> is called out of PlayerHealth.Update and the pause
+    /// overlay reads it in OnGUI - so unlike <see cref="deathLinks"/> it needs no lock.
+    /// </summary>
+    private int deathsSinceLastLink;
+
+    /// <summary>Whether the room linked this slot's deaths at all. Shown in the pause overlay.</summary>
+    public bool DeathLinkEnabled => deathLinkEnabled;
+
+    /// <summary>
+    /// How many local deaths one outgoing death costs. Never below 1, whatever the room said.
+    /// </summary>
+    public int DeathsPerLink => deathsPerLink;
+
+    /// <summary>
+    /// Deaths taken since the last one was shared, so the overlay can show
+    /// <c>DeathsTowardNextLink / DeathsPerLink</c>. Never reaches
+    /// <see cref="DeathsPerLink"/>: the death that would make it equal is the one that is sent,
+    /// and it resets to 0 in the same call.
+    /// </summary>
+    public int DeathsTowardNextLink => deathsSinceLastLink;
+
+    /// <summary>How many deaths this session has actually put out into the multiworld.</summary>
+    public int DeathLinksSent { get; private set; }
+
+    /// <summary>
     /// Deaths waiting to be applied. Filled on the Archipelago client's websocket thread and
     /// drained on Unity's main thread, so every touch of it is locked - Queue&lt;T&gt; corrupts its
     /// backing array if an Enqueue lands in the middle of a Dequeue. Same reason
@@ -89,12 +121,18 @@ public class DeathLinkHandler
     /// <param name="deathLinkService">The new DeathLinkService that our handler will use to send and
     /// receive death links</param>
     /// <param name="enableDeathLink">Whether we should enable death link or not on startup</param>
-    public DeathLinkHandler(DeathLinkService deathLinkService, string name, bool enableDeathLink = false)
+    /// <param name="deathsPerLinkSetting">The room's deaths_per_link. Anything below 1 is taken as
+    /// 1 - "a link every no deaths" has no meaning, and every-death is what a room that does not
+    /// offer the option behaves like. ArchipelagoData clamps it too; this is here so the invariant
+    /// holds for any other caller as well.</param>
+    public DeathLinkHandler(
+        DeathLinkService deathLinkService, string name, bool enableDeathLink = false, int deathsPerLinkSetting = 1)
     {
         service = deathLinkService;
         service.OnDeathLinkReceived += DeathLinkReceived;
         slotName = name;
         deathLinkEnabled = enableDeathLink;
+        deathsPerLink = Math.Max(1, deathsPerLinkSetting);
 
         if (deathLinkEnabled)
         {
@@ -108,6 +146,11 @@ public class DeathLinkHandler
     public void ToggleDeathLink()
     {
         deathLinkEnabled = !deathLinkEnabled;
+
+        // Partial progress is dropped either way round. Deaths taken while unlinked were never
+        // going to be shared, and carrying a count across the gap would send the next death
+        // early off the back of them.
+        deathsSinceLastLink = 0;
 
         if (deathLinkEnabled)
         {
@@ -298,6 +341,28 @@ public class DeathLinkHandler
                 suppressNextDeath = false;
                 return;
             }
+
+            // Counted, not sent, until the room's deaths_per_link is reached. Gated here rather
+            // than inside SendDeathLink so that the traps and any future caller that means "send
+            // this death now" still do exactly that; this is only the rule for deaths of ours.
+            //
+            // Ahead of the count, not after it: deaths taken while unlinked must not build up
+            // progress that fires the moment DeathLink is switched back on.
+            if (!deathLinkEnabled) return;
+
+            deathsSinceLastLink++;
+
+            if (deathsSinceLastLink < deathsPerLink)
+            {
+                Plugin.BepinLogger.LogDebug(
+                    $"[DeathLink] death {deathsSinceLastLink}/{deathsPerLink}; not sharing this one.");
+                return;
+            }
+
+            // Reset before the send, so a throw out of SendDeathLink cannot leave the counter
+            // parked at the threshold and share every death from here on.
+            deathsSinceLastLink = 0;
+            DeathLinksSent++;
 
             SendDeathLink(DescribeDeath(playerHealth));
         }

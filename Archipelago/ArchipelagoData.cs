@@ -48,6 +48,18 @@ public class ArchipelagoData
     /// </summary>
     public bool DeathLink { get; private set; }
 
+    /// <summary>
+    /// How many of the local player's own deaths it takes to send one death out to the
+    /// multiworld - the apworld's DeathsPerLink Range option.
+    /// </summary>
+    /// <remarks>
+    /// Outgoing only. A death arriving from another world always kills, whatever this is: the
+    /// room decided to send it, and swallowing it here would silently unlink this slot. 1 - the
+    /// apworld's default and the floor of its range - shares every death, which is what a room
+    /// with no such option behaves like.
+    /// </remarks>
+    public int DeathsPerLink { get; private set; } = DefaultDeathsPerLink;
+
     /// <summary>Whether the room asked for Green Mode. Mirrored onto the Mod Menu setting.</summary>
     public bool GreenMode { get; private set; }
 
@@ -100,6 +112,7 @@ public class ArchipelagoData
     // names from the apworld's StraftatOptions dataclass, which is what fill_slot_data's
     // options.as_dict() keys the dictionary on.
     private const string DeathLinkKey = "deathlink";
+    private const string DeathsPerLinkKey = "deaths_per_link";
     private const string GreenModeKey = "green_mode";
     private const string NewWeaponChanceKey = "new_weapon_chance";
     private const string NonDamagingWeaponsKey = "non_damaging_weapons";
@@ -116,6 +129,7 @@ public class ArchipelagoData
     private const int DefaultWinThreshold = 5;
     private const int DefaultWeaponGoalThreshold = 50;
     private const int DefaultRoundChecks = 30;
+    private const int DefaultDeathsPerLink = 1;
 
     // Deliberately wider than the apworld's WinThreshold Range (1-100). Every other clamp here
     // protects a control that cannot display an out-of-range value; this one is a GOAL, and
@@ -133,6 +147,12 @@ public class ArchipelagoData
     // and a value above the apworld's own maximum names a Round_N the room cannot have.
     private const int RoundChecksMinimum = 0;
     private const int RoundChecksMaximum = 100;
+
+    // The bounds of the apworld's DeathsPerLink Range option. The floor matters: 0 or below
+    // would mean "one link per no deaths", which the counter cannot express, and clamping to 1
+    // gives the every-death behaviour a room without the option already has.
+    private const int DeathsPerLinkMinimum = 1;
+    private const int DeathsPerLinkMaximum = 100;
 
     // The bounds of the apworld's NewWeaponChance Range option. A value outside them is clamped
     // rather than refused, because the Mod Menu slider this feeds is bound to the same range and
@@ -178,6 +198,8 @@ public class ArchipelagoData
         seed = roomSeed;
 
         DeathLink = ReadToggle(slotData, DeathLinkKey, DeathLink);
+        DeathsPerLink = ReadRange(slotData, DeathsPerLinkKey, DeathsPerLink,
+            DeathsPerLinkMinimum, DeathsPerLinkMaximum);
         GreenMode = ReadToggle(slotData, GreenModeKey, ArchipelagoMenu.GreenMode?.Value ?? false);
         NewWeaponChance = ReadRange(slotData, NewWeaponChanceKey,
             ArchipelagoMenu.NewWeaponChance?.Value ?? NewWeaponChanceMaximum / 2,

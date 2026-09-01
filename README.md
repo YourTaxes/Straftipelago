@@ -30,15 +30,21 @@ ModMenu adds a custom UI in the options menu for changing the configurations of 
 Download - **[ChatCommands](https://thunderstore.io/c/straftat/p/kestrel/Chat_Commands/)**
 
 I was a big fan of the chat commands mod, as it was super useful for spawning weapons durring development to test things like kill interactions.
-ChatCommands is the Archipelago console. Every one of the server's `!commands` is registered as a chat command prefixed with `ap_` - `/ap_help`, `/ap_hint 'Progressive Sword'`, `/ap_missing` and so on - and whatever the room says back is printed into the chat, the same way `/help` prints its output. `/ap` sends a line to the room verbatim if you need a command this list does not name.
+How this dependancy is used in this mod is by turning the chat into the local user's Archipelago Text Client.
+The list of commands avalible very closely follow the list avalible in the standard text console, but all of the command names have "ap_" appended in the front to prevent overlap with the existing console commands, eg. !status is now /ap_status. 
+Also, everything the Archipelago server sends to the player's terminal (items, chat, disconnects) is piped into the straftat chat. 
+If there is a command that is not directly supported or you want to use the chat, then use "/ap '{command or message}'" to put your message into the archipelago terminal directly.
 
-FYI, this mod is not vanilla compatable, so all players need the mod.
+### Disclaimer 
+This mod is NOT vanilla compatable, so all players need the mod. 
 
 ### Use in game
 
 When you launch the game, your first step is to go to options and go to the mods tab (provided with ModMenu), and then go to the page for Straftipeago. Here, you will be able to enter the information and enter the room for Archipelago. Also, I would take the time to configre the other settings there, such as Green Mode. 
 
 Challenge Me
+
+Also, settings the settings "New Weapon Chance" and "Green Mode" are set by the Archipelago YAML file, so when you connect to the archipleago room, it will overwrite those settings with what was denoted in the YAML. They are left accessable durring the game, so that they can be changed if a player needs to get unstuck due to bad luck with weapon draws, or if they are too weak to challenge me in Green Mode, or if they wish to accept the challenge.
 
 
 Next, go back to the main menu, and then join your lobby for STRAFTAT, and get started.
@@ -47,7 +53,7 @@ Next, go back to the main menu, and then join your lobby for STRAFTAT, and get s
 
 ## Licences
 
-All the code was done by me, as were all the assets were painstakingly modeled (the single cylelder with 12 circles). 
+All the code was done by me, as were all the assets were painstakingly modeled (the single cylinder with 12 circles). 
 
 However, I did not make the picture of the Archipelago logo, so here is the copyright for that.
 Archipelago Logo: © 2022 by Krista Corkos and Christopher Wilson is licensed under Attribution-NonCommercial 4.0 International. To view a copy of this license, visit http://creativecommons.org/licenses/by-nc/4.0/

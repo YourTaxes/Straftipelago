@@ -135,7 +135,8 @@ public class ArchipelagoClient
             // After SetupSession above, which is what reads deathlink out of the slot data the
             // login just returned. Constructed with it rather than toggled afterwards, so the
             // service is subscribed on the server side before the first frame can report a death.
-            DeathLinkHandler = new(session.CreateDeathLinkService(), ServerData.SlotName, ServerData.DeathLink);
+            DeathLinkHandler = new(session.CreateDeathLinkService(), ServerData.SlotName,
+                ServerData.DeathLink, ServerData.DeathsPerLink);
             session.Locations.CompleteLocationChecksAsync(ServerData.CheckedLocations.ToArray());
             outText = $"Successfully connected to {ServerData.Uri} as {ServerData.SlotName}!";
 
