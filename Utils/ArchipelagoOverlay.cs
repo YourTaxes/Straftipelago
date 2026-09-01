@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using HarmonyLib;
 using Straftapelago.Finnegan_McD.org.Archipelago;
 using Straftapelago.Finnegan_McD.org.Patches;
@@ -37,6 +37,13 @@ internal class ArchipelagoOverlay : MonoBehaviour
     // directly above WeaponPanelTopFraction, which is where the weapon list starts.
     private const float PanelLeftFraction = 0.02f;
     private const float WeaponPanelTopFraction = 0.22f;
+
+    /// <summary>
+    /// Where the Metronome countdown sits. Top left, on the same left edge as the two paused
+    /// panels, and well above where the higher of them starts - those are only ever up while
+    /// paused, but a countdown does not stop for the pause menu, so the two must not collide.
+    /// </summary>
+    private const float MetronomePanelTopFraction = 0.02f;
     private const float PanelPaddingFraction = 0.006f;
     private const float EntryHeightFraction = 0.022f;
     private const float EntryFontFraction = 0.016f;
@@ -127,6 +134,11 @@ internal class ArchipelagoOverlay : MonoBehaviour
             Plugin.BepinLogger.LogInfo($"[Overlay] drawing, frame={Time.frameCount}");
         }
 
+        // Before the pause gate, because this one is not a paused panel: it is a trap running
+        // against the player in real time, and a countdown they could only read by pausing
+        // would be no countdown at all. It draws itself only while one is running.
+        DrawMetronomeCountdown();
+
         // The pause gate for both panels, here rather than in each of them: they are one
         // stacked block as far as the player is concerned, and a gate that let one through
         // without the other would leave a stat box floating over an empty screen.
@@ -147,6 +159,44 @@ internal class ArchipelagoOverlay : MonoBehaviour
         // default Archipelago GUI.
         DrawSessionProgress();
         DrawObtainedWeapons();
+    }
+
+    /// <summary>
+    /// The Metronome trap's countdown, in the top left corner while one is running.
+    /// </summary>
+    /// <remarks>
+    /// <para>Drawn from <see cref="Patches.MetronomeTrap.SecondsRemaining"/>, which is the same
+    /// number the countdown is actually spending rather than a copy kept here, and read on the
+    /// main thread like everything else that touches it.</para>
+    /// <para>Ceiling rather than rounding, so the last second is shown as 1 for the whole of
+    /// itself and the box goes away on 0 instead of sitting there reading zero.</para>
+    /// </remarks>
+    private static void DrawMetronomeCountdown()
+    {
+        float secondsRemaining = MetronomeTrap.SecondsRemaining;
+        if (secondsRemaining <= 0f) return;
+
+        float panelLeft = Screen.width * PanelLeftFraction;
+        float panelTop = Screen.height * MetronomePanelTopFraction;
+        float panelPadding = Screen.width * PanelPaddingFraction;
+        float entryHeight = Screen.height * EntryHeightFraction;
+        float headerHeight = entryHeight * 1.5f;
+
+        // One column, the width the weapon list gives each of its own, which is more than the
+        // two short lines here need and keeps the box the same shape as the rest of the overlay.
+        float entryWidth = Screen.width * 0.145f;
+        float panelWidth = entryWidth + panelPadding * 2f;
+        float panelHeight = headerHeight + entryHeight + entryHeight * 0.5f;
+
+        GUI.Box(new Rect(panelLeft, panelTop, panelWidth, panelHeight), "");
+
+        GUIStyle style = EntryStyle();
+        float entryLeft = panelLeft + panelPadding;
+
+        GUI.Label(new Rect(entryLeft, panelTop + entryHeight * 0.25f, entryWidth, headerHeight),
+            "Metronome", style);
+        GUI.Label(new Rect(entryLeft, panelTop + headerHeight, entryWidth, entryHeight),
+            $"{Mathf.CeilToInt(secondsRemaining)}s left", style);
     }
 
     /// <summary>

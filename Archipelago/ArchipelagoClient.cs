@@ -510,14 +510,12 @@ public class ArchipelagoClient
             case MetronomeTrapItem:
                 if (!AllowOneShot(itemName)) return;
 
-                // The whole of it, for now. Guarded by AllowOneShot like the other two so that a
-                // reconnect's replay does not announce every metronome the player has ever been
-                // sent, which is the shape any future effect will need anyway.
+                // Guarded by AllowOneShot like the other two so that a reconnect's replay does
+                // not start a countdown for every metronome the player has ever been sent.
                 //
-                // KillFeed rather than Utils.Killfeed: that one only ever reaches MatchLogsOffline
-                // and would queue forever in a networked match. See LocationSender.
-                MainThreadActions.Enqueue(() =>
-                    KillFeed.Write("Archipelago", "Received Metronome - tick tock tick tock"));
+                // Everything the trap then does - the countdown, the overlay in the corner and
+                // the tick tock - is MetronomeTrap's, and all of it is main-thread work.
+                MainThreadActions.Enqueue(() => MetronomeTrap.Receive(sender));
                 return;
 
             case HealthBuffItem:

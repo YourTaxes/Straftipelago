@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using BepInEx;
 using BepInEx.Configuration;
@@ -41,6 +41,12 @@ internal static class ArchipelagoMenu
     //determines the greenness. not visible through modmenu
     public static ConfigEntry<Vector3> GreenModeTintRgb { get; private set; }
 
+    // how many seconds the Metronome trap's countdown runs for. not visible through modmenu
+    public static ConfigEntry<int> MetronomeTrapSeconds { get; private set; }
+
+    // how long between the Metronome's tick/and/tock prints. not visible through modmenu
+    public static ConfigEntry<float> MetronomeTickSeconds { get; private set; }
+
     // gates the I/O/P/K roulette debug keys in PlayerPickupUpdatePatch
     public static ConfigEntry<bool> DebugButtons { get; private set; }
 
@@ -58,6 +64,12 @@ internal static class ArchipelagoMenu
 
         // hide green tint, so that it is still modifiable, but not as easy as the others
         ModMenuCustomisation.HideEntry(GreenModeTintRgb);
+
+        // The two Metronome knobs are hidden for the same reason: they tune a trap the room
+        // inflicts, so they are meant to be set once in the .cfg rather than reached for from
+        // the pause menu while one is running.
+        ModMenuCustomisation.HideEntry(MetronomeTrapSeconds);
+        ModMenuCustomisation.HideEntry(MetronomeTickSeconds);
 
         Sprite icon = LoadIcon();
         if (icon != null) ModMenuCustomisation.SetPluginIcon(icon);
@@ -159,6 +171,27 @@ internal static class ArchipelagoMenu
 
         // Picked up without a restart when this file is edited and BepInEx reloads it.
         GreenModeTintRgb.SettingChanged += (_, _) => GreenModeTint.RefreshAll();
+
+        // The Metronome trap's two knobs. AcceptableValueRange on both is what stops a
+        // hand-edited .cfg putting a zero or a negative into the countdown - see the second
+        // guard MetronomeTrap keeps against the same thing.
+        MetronomeTrapSeconds = config.Bind("Traps", "Metronome Seconds",
+            30,
+            new ConfigDescription(
+                "How many seconds the Metronome trap's countdown runs for. A Metronome that " +
+                "arrives while one is already running extends it by this much again.\n\n" +
+                "The countdown only runs while you are alive and playing - it holds between " +
+                "rounds and while you are dead, but it keeps going while you are stunned.\n\n" +
+                "Not shown in the Mod Menu page; edit it here.",
+                new AcceptableValueRange<int>(1, 600)));
+
+        MetronomeTickSeconds = config.Bind("Traps", "Metronome Tick Seconds",
+            0.5f,
+            new ConfigDescription(
+                "How long between the Metronome's prints, which beat 'tick', 'and', 'tock', " +
+                "'and' round and round for as long as the countdown lasts.\n\n" +
+                "Not shown in the Mod Menu page; edit it here.",
+                new AcceptableValueRange<float>(0.05f, 10f)));
 
         // Bound after the Green Mode entries so the Debug section sits below them, in the
         // .cfg and on the Mod Menu page alike.
@@ -305,6 +338,8 @@ internal static class ArchipelagoMenu
                 || entry == NewWeaponChance
                 || entry == GreenMode
                 || entry == GreenModeTintRgb
+                || entry == MetronomeTrapSeconds
+                || entry == MetronomeTickSeconds
                 || entry == DebugButtons;
         }
         catch (Exception e)
