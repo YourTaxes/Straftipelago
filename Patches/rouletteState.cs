@@ -40,8 +40,8 @@ public class RouletteState
     public List<GameObject> hasKill_Items = new();
 
     // What the pool falls back to when there is no room to get unlocks from. Connected, NOTHING
-    // is seeded from here: the room's starting_weapon option is pushed as a precollected item
-    // and arrives through ReceiveWeapon like any other unlock, so hardcoding a starter would
+    // is seeded from here: the room's starting_weapons option is pushed as precollected items
+    // and they arrive through ReceiveWeapon like any other unlock, so hardcoding a starter would
     // hand the player a weapon the multiworld never granted. Offline it is the only thing
     // keeping the roulette able to roll at all.
     //
@@ -327,7 +327,7 @@ public class RouletteState
     /// <summary>
     /// Seeds a starting pool for a session with no room behind it, so the roulette still works
     /// offline. Only reached when not authenticated — connected, every unlock comes from the
-    /// multiworld, including the one the room's starting_weapon option precollected.
+    /// multiworld, including the ones the room's starting_weapons option precollected.
     /// </summary>
     /// <remarks>
     /// Nothing in here may throw. Reset() is reached from a Harmony prefix on

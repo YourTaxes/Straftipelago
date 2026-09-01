@@ -81,31 +81,57 @@ public static class LocationSender
             KillFeed.Write("Archipelago",
                 $"{KillFeed.LocalPlayerName} got a kill for the first time with {weapon_name}");
 
+            return SendByLocationName(LocationNameFor(weapon_name), $"first kill with '{weapon_name}'");
+        }
+        catch (Exception error)
+        {
+            // This is reached from the kill path. A failure to send a check must never cost
+            // the kill it came from.
+            Plugin.BepinLogger.LogError($"[Archipelago] Send_Location('{weapon_name}') failed: {error}");
+            return LocationSendResult.Failed;
+        }
+    }
+
+    /// <summary>
+    /// Sends one check by the name the room knows it under, whatever earned it.
+    /// </summary>
+    /// <remarks>
+    /// Split out of <see cref="Send_Location"/> so that a check which is not a weapon - the
+    /// Round_N round-win checks - does not have to go through <see cref="LocationNameFor"/>, a
+    /// weapon-pool lookup that could only ever fail to resolve it. A name reaching here is already
+    /// in the apworld's spelling; the only translation left is the id.
+    /// </remarks>
+    /// <param name="locationName">The location's name as the apworld spells it.</param>
+    /// <param name="earnedBy">
+    /// What earned the check, for the log lines. Free text - "first kill with 'AK-K'", "round 3
+    /// won" - and never parsed.
+    /// </param>
+    public static LocationSendResult SendByLocationName(string locationName, string earnedBy)
+    {
+        try
+        {
             ArchipelagoClient client = Plugin.ArchipelagoClient;
             if (client == null || !ArchipelagoClient.Authenticated)
             {
-                // Announced above and logged here, but not queued: a check earned while
-                // offline has no session to belong to, and the pool move that came with it is
-                // local state that a later connect does not replay.
+                // Logged but not queued: a check earned while offline has no session to belong
+                // to, and the local state that came with it is not something a later connect
+                // replays.
                 Plugin.BepinLogger.LogWarning(
-                    $"[Archipelago] first kill with '{weapon_name}' earned a check, but there is " +
-                    "no room to send it to.");
+                    $"[Archipelago] {earnedBy} earned a check, but there is no room to send it to.");
                 return LocationSendResult.NotConnected;
             }
-
-            string locationName = LocationNameFor(weapon_name);
 
             long locationId = client.ResolveLocationId(locationName);
             if (locationId < 0)
             {
-                // The mod and the apworld disagree about a weapon's name. Worth a loud line:
-                // it means that weapon's check can never be sent, and no amount of playing
-                // will fix it. Both spellings are printed because the fix is to make the
-                // apworld's LOCATION_NAME_TO_ID agree with the prefab name.
+                // The mod and the apworld disagree about a name. Worth a loud line: it means that
+                // check can never be sent, and no amount of playing will fix it. The name is
+                // printed because the fix is to make the apworld's LOCATION_NAME_TO_ID agree with
+                // whatever this mod sends.
                 Plugin.BepinLogger.LogWarning(
                     $"[Archipelago] the room has no location named '{locationName}', so the check " +
-                    $"for '{weapon_name}' cannot be sent. The game's prefab name and the apworld's " +
-                    "location name differ.");
+                    $"for {earnedBy} cannot be sent. This mod and the apworld disagree about the " +
+                    "location's name.");
                 return LocationSendResult.UnknownLocation;
             }
 
@@ -121,14 +147,13 @@ public static class LocationSender
             ArchipelagoClient.ServerData.CheckedLocations.Add(locationId);
 
             Plugin.BepinLogger.LogInfo(
-                $"[Archipelago] sent the check for '{weapon_name}' as location '{locationName}' (id {locationId}).");
+                $"[Archipelago] sent the check for {earnedBy} as location '{locationName}' (id {locationId}).");
             return LocationSendResult.Sent;
         }
         catch (Exception error)
         {
-            // This is reached from the kill path. A failure to send a check must never cost
-            // the kill it came from.
-            Plugin.BepinLogger.LogError($"[Archipelago] Send_Location('{weapon_name}') failed: {error}");
+            Plugin.BepinLogger.LogError(
+                $"[Archipelago] SendByLocationName('{locationName}') failed: {error}");
             return LocationSendResult.Failed;
         }
     }

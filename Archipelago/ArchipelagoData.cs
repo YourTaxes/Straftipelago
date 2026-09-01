@@ -85,6 +85,17 @@ public class ArchipelagoData
     /// </summary>
     public int WeaponGoalThreshold { get; private set; } = DefaultWeaponGoalThreshold;
 
+    /// <summary>
+    /// How many Round_N locations the room has, and therefore the last round win that is worth
+    /// sending a check for.
+    /// </summary>
+    /// <remarks>
+    /// A cap, not a goal. The apworld creates Round_1 through Round_N and no more, so a session
+    /// that runs past N has nothing left to send - and sending anyway would log "the room has no
+    /// location named Round_31" once per round for the rest of the night.
+    /// </remarks>
+    public int RoundChecks { get; private set; } = DefaultRoundChecks;
+
     // The slot data keys the room publishes these options under. They are the option attribute
     // names from the apworld's StraftatOptions dataclass, which is what fill_slot_data's
     // options.as_dict() keys the dictionary on.
@@ -97,14 +108,16 @@ public class ArchipelagoData
     private const string WinConditionKey = "win_condition";
     private const string WinThresholdKey = "win_threshold";
     private const string WeaponGoalThresholdKey = "weapon_goal_threshold";
+    private const string RoundChecksKey = "round_checks";
 
-    // The apworld's own defaults for the three goal options, used when the room sends none of
-    // them - which is what an apworld older than this mod does. Guessing "no goal at all" there
-    // would silently hand the player a world that completes on connect.
+    // The apworld's own defaults for these options, used when the room sends none of them - which
+    // is what an apworld older than this mod does. Guessing "no goal at all" there would silently
+    // hand the player a world that completes on connect.
     private const int DefaultWinThreshold = 5;
     private const int DefaultWeaponGoalThreshold = 50;
+    private const int DefaultRoundChecks = 30;
 
-    // Deliberately wider than the apworld's WinThreshold Range (1-30). Every other clamp here
+    // Deliberately wider than the apworld's WinThreshold Range (1-100). Every other clamp here
     // protects a control that cannot display an out-of-range value; this one is a GOAL, and
     // clamping a raised threshold down would quietly complete the world early. The upper bound
     // is only here to reject a garbage value outright.
@@ -114,6 +127,12 @@ public class ArchipelagoData
     // A percentage genuinely cannot be outside this, so clamping costs nothing.
     private const int WeaponGoalThresholdMinimum = 0;
     private const int WeaponGoalThresholdMaximum = 100;
+
+    // The bounds of the apworld's RoundChecks Range option. Clamped rather than widened like the
+    // win threshold: this one is not a goal but a count of locations that either exist or do not,
+    // and a value above the apworld's own maximum names a Round_N the room cannot have.
+    private const int RoundChecksMinimum = 0;
+    private const int RoundChecksMaximum = 100;
 
     // The bounds of the apworld's NewWeaponChance Range option. A value outside them is clamped
     // rather than refused, because the Mod Menu slider this feeds is bound to the same range and
@@ -174,6 +193,8 @@ public class ArchipelagoData
             WinThresholdMinimum, WinThresholdMaximum);
         WeaponGoalThreshold = ReadRange(slotData, WeaponGoalThresholdKey, WeaponGoalThreshold,
             WeaponGoalThresholdMinimum, WeaponGoalThresholdMaximum);
+        RoundChecks = ReadRange(slotData, RoundChecksKey, RoundChecks,
+            RoundChecksMinimum, RoundChecksMaximum);
     }
 
     /// <summary>

@@ -164,7 +164,8 @@ internal class ArchipelagoOverlay : MonoBehaviour
     /// Both only
     /// appear while connected: offline no room is asking for anything, and the apworld defaults
     /// ServerData is holding are not a goal anyone agreed to. Rounds won has no goal behind it,
-    /// so it never takes a tick.</para>
+    /// so it never takes a tick - the number beside it is the room's round_checks, which is how
+    /// many Round_N checks exist, not something to reach.</para>
     /// </remarks>
     private static void DrawSessionProgress()
     {
@@ -199,7 +200,14 @@ internal class ArchipelagoOverlay : MonoBehaviour
               + (showGoals ? $", goal {serverData.WeaponGoalThreshold}%" : "")
             : "Weapons earned: waiting for the first match"));
 
-        lines.Add((false, $"Rounds won this session: {TakeTracker.RoundsWon}"));
+        // Against the room's cap rather than bare, because that cap is the number that matters to
+        // the player: Round_1 through Round_N are checks, and a round won past N sends nothing.
+        // Offline the cap is only the apworld's default sitting in ServerData, which no room has
+        // agreed to, so the plain count is shown instead - the same reason the two goal lines drop
+        // their thresholds when showGoals is false.
+        lines.Add((false, showGoals
+            ? $"Rounds won this session: {TakeTracker.RoundsWon} / {serverData.RoundChecks} checks"
+            : $"Rounds won this session: {TakeTracker.RoundsWon}"));
 
         // Packed to the width the longest line needs, with room for the tick that a met goal
         // adds to the end of it, and capped to the same left-half budget the weapon list keeps

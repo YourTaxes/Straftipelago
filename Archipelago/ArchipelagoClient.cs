@@ -101,8 +101,8 @@ public class ArchipelagoClient
                         Game,
                         ServerData.SlotName,
                         // AllItems, not IncludeOwnItems: the starting inventory is a SEPARATE
-                        // flag, and the room's starting_weapon option is delivered as a
-                        // precollected item. Without it the player connects with an empty
+                        // flag, and the room's starting_weapons option is delivered as
+                        // precollected items. Without it the player connects with an empty
                         // roulette pool and no way to fill it.
                         ItemsHandlingFlags.AllItems,
                         new Version(APVersion),
@@ -199,9 +199,14 @@ public class ArchipelagoClient
             // call covers.
             Plugin.RouletteState?.Reset();
 
+            // The round counter is memory-only and starts at zero with the process, so a rejoin
+            // would otherwise re-send Round_1 on the next round win. The room remembers which
+            // round checks this slot has, so it is the one asked.
+            TakeTracker.SeedRoundsWonFromRoom();
+
             // Last of all, and the reason this runs on a frame rather than on the login's own
             // thread: everything the room replayed on connect has arrived and been folded into
-            // the pool by now, so a Death or a Health from here on is a new one.
+            // the pool by now, so a trap or a Health from here on is a new one.
             acceptOneShotItems = true;
 
             // After the rebuild above, so this sees the checks the room has already recorded for
@@ -384,7 +389,7 @@ public class ArchipelagoClient
         // Already applied. The server replays the whole inventory on every connect, and this
         // watermark is what stops a reconnect re-granting it - which matters most for the items
         // that are not idempotent: a second Progressive Lazer would unlock a tier that was never
-        // earned, and a second Death would kill the player again.
+        // earned, and a second trap would go off again.
         if (helper.Index <= ServerData.Index) return;
 
         ServerData.Index++;
@@ -434,8 +439,18 @@ public class ArchipelagoClient
     // nothing (the name resolved to no weapon, and Grant answers false for that).
     private static readonly string[] LazerTiers = { "BeamLoad", "HandCanon", "BlankState" };
 
-    /// <summary>The apworld's two filler items: a trap and a buff.</summary>
+    /// <summary>
+    /// The apworld's filler items: two traps and a buff.
+    /// </summary>
+    /// <remarks>
+    /// The two traps are separate ITEMS rather than one item whose behaviour a setting decides.
+    /// The apworld's trap_type option picks which of them fills the pool's trap slots, so the name
+    /// the room sends already says which trap arrived and nothing here has to read slot data to
+    /// find out. trap_type is in slot data all the same, but only so the player can see it.
+    /// </remarks>
     private const string DeathTrapItem = "Death";
+
+    private const string MetronomeTrapItem = "Metronome";
 
     private const string HealthBuffItem = "Health";
 
@@ -443,7 +458,7 @@ public class ArchipelagoClient
     private int lazerTiersReceived;
 
     /// <summary>
-    /// Whether an arriving Death or Health may actually go off, as opposed to being one the
+    /// Whether an arriving trap or Health may actually go off, as opposed to being one the
     /// room is only reminding us we already had.
     /// </summary>
     /// <remarks>
@@ -491,6 +506,19 @@ public class ArchipelagoClient
                 MainThreadActions.Enqueue(() => DeathLinkHandler?.EnqueueTrapDeath(sender));
                 return;
 
+            case MetronomeTrapItem:
+                if (!AllowOneShot(itemName)) return;
+
+                // The whole of it, for now. Guarded by AllowOneShot like the other two so that a
+                // reconnect's replay does not announce every metronome the player has ever been
+                // sent, which is the shape any future effect will need anyway.
+                //
+                // KillFeed rather than Utils.Killfeed: that one only ever reaches MatchLogsOffline
+                // and would queue forever in a networked match. See LocationSender.
+                MainThreadActions.Enqueue(() =>
+                    KillFeed.Write("Archipelago", "Received Metronome - tick tock tick tock"));
+                return;
+
             case HealthBuffItem:
                 if (!AllowOneShot(itemName)) return;
 
@@ -514,7 +542,7 @@ public class ArchipelagoClient
     {
         if (acceptOneShotItems) return true;
 
-        // Reported rather than dropped in silence: "the room sent me a Death and nothing
+        // Reported rather than dropped in silence: "the room sent me a trap and nothing
         // happened" is otherwise indistinguishable from the trap being broken.
         ArchipelagoConsole.LogMessage(
             $"Ignoring the {itemName} the room replayed on connect - it was already spent.");

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using HarmonyLib;
 using Straftapelago.Finnegan_McD.org.Archipelago;
@@ -40,6 +41,12 @@ internal static class TakeTracker
     /// counted from process start, gone when the game closes.
     /// </remarks>
     internal static int RoundsWon { get; private set; }
+
+    /// <summary>
+    /// The apworld names its round-win locations Round_1, Round_2, ... Round_N, where N is the
+    /// room's round_checks option.
+    /// </summary>
+    private const string RoundCheckPrefix = "Round_";
 
     /// <summary>What the round-score table said at the previous take. See <see cref="Observe"/>.</summary>
     private static readonly Dictionary<int, int> lastSeenRoundScores = new();
@@ -105,6 +112,8 @@ internal static class TakeTracker
                 RoundsWon++;
                 Plugin.BepinLogger.LogInfo(
                     $"[TakeTracker] team {teamId} won a round; {RoundsWon} won this session.");
+
+                SendRoundCheck();
             }
         }
 
@@ -113,6 +122,68 @@ internal static class TakeTracker
         {
             lastSeenRoundScores[teamScore.Key] = teamScore.Value;
         }
+    }
+
+    /// <summary>
+    /// Sends the check for the round that was just won, if the room has one for it.
+    /// </summary>
+    /// <remarks>
+    /// Capped at the room's round_checks, which is how many Round_N locations the apworld created.
+    /// Past that there is simply no location to send, and asking anyway would log "the room has no
+    /// location named Round_31" once per round for the rest of the session. RoundsWon itself keeps
+    /// counting past the cap - it is the honest number, and the overlay shows it against the cap.
+    /// </remarks>
+    private static void SendRoundCheck()
+    {
+        ArchipelagoData serverData = ArchipelagoClient.ServerData;
+        if (serverData == null) return;
+
+        if (RoundsWon > serverData.RoundChecks)
+        {
+            // Debug rather than a warning: running out of round checks is an ordinary end state
+            // for a long session, not a fault.
+            Plugin.BepinLogger.LogDebug(
+                $"[TakeTracker] round {RoundsWon} is past the room's {serverData.RoundChecks} " +
+                "round checks; nothing to send.");
+            return;
+        }
+
+        LocationSender.SendByLocationName($"{RoundCheckPrefix}{RoundsWon}", $"round {RoundsWon} won");
+    }
+
+    /// <summary>
+    /// Sets <see cref="RoundsWon"/> to the highest round check the room already has for this slot.
+    /// </summary>
+    /// <remarks>
+    /// The room is the record, the same way it is for first kills (see
+    /// RouletteState.ReplayEarnedKills). Without this a reconnect would start counting from zero
+    /// and re-send Round_1 on the next round win, and the player's real progress would be stuck
+    /// behind checks the room already has.
+    ///
+    /// The highest rather than the count, because that is what the next send has to follow. The
+    /// two only differ if a check went missing, and resuming after the gap is better than sending
+    /// a location the room already recorded.
+    /// </remarks>
+    internal static void SeedRoundsWonFromRoom()
+    {
+        int highest = 0;
+
+        foreach (string locationName in ArchipelagoClient.GetCheckedLocationNames())
+        {
+            if (locationName == null || !locationName.StartsWith(RoundCheckPrefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string suffix = locationName.Substring(RoundCheckPrefix.Length);
+            if (int.TryParse(suffix, out int roundNumber) && roundNumber > highest) highest = roundNumber;
+        }
+
+        if (highest <= RoundsWon) return;
+
+        Plugin.BepinLogger.LogInfo(
+            $"[TakeTracker] the room already has round checks up to {highest}; continuing from there.");
+        RoundsWon = highest;
     }
 
     /// <summary>True when the round scores were wiped between the snapshot and this table.</summary>
