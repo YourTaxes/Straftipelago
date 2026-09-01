@@ -46,7 +46,7 @@ public static class DiagnosticFlags
     /// <summary>Skips RouletteState.Reset() in PlayerPickupAwakePatch (tests candidate A2).</summary>
     public static bool SkipRouletteResetOnAwake = false;
 
-    /// <summary>Skips runtime SpawnablePrefabs registration in ItemSpawnerStartPatch (tests candidate A1).</summary>
+    /// <summary>Skips runtime SpawnablePrefabs registration in RoulettePrefabRegistration (tests candidate A1).</summary>
     public static bool SkipPrefabRegistration = false;
 
     /// <summary>Skips replacing ItemSpawner.itemToSpawn with the roulette prefab (tests candidate C1).</summary>

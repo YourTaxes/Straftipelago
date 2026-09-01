@@ -4,8 +4,6 @@ using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using DG.Tweening;
-using FishNet.Managing.Object;
-using FishNet.Object;
 using HarmonyLib;
 using Straftapelago.Finnegan_McD.org.Utils;
 using UnityEngine;
@@ -85,50 +83,13 @@ public class ItemSpawnerStartPatch
     {
         //Plugin.BepinLogger.LogInfo("ItemSpawner Start called");
 
-        // Register the AssetBundle-loaded roulette prefab with FishNet's spawnable
-        // prefab table. Must run on every peer (host AND clients), not just the
-        // server: each machine resolves incoming spawn messages against its own
-        // local copy of this table, and this prefab was never part of the game's
-        // build-time registration since it's loaded at runtime from our bundle.
-        // checkForDuplicates makes this safe to call from every ItemSpawner.Start().
-        NetworkObject rouletteNob = Plugin.RouletteItemPrefab.GetComponent<NetworkObject>();
-        FishNet.Managing.NetworkManager networkManager = FishNet.InstanceFinder.NetworkManager;
-        PrefabObjects spawnables = networkManager?.SpawnablePrefabs;
-
-        // DIAGNOSTIC (candidate A1 — the most decisive test in this pass).
-        // FishNet's PrefabId is just the positional index into SpawnablePrefabs'
-        // List<NetworkObject>: InitializePrefab(_prefabs[i], i, CollectionId), and
-        // GetObject(asServer, id) indexes straight back into that list. Mutating this
-        // table at runtime (which vanilla never does) is only safe if every peer ends
-        // up with an IDENTICAL table. Note the null-conditional above: on a joining
-        // client whose NetworkManager isn't ready yet, registration is skipped
-        // SILENTLY, leaving that client's table one entry short and every subsequent
-        // spawn message resolving against the wrong index.
-        // Compare PrefabId/count between the host's log and the client's — if they
-        // differ, this is the bug.
-        if (DiagnosticFlags.SkipPrefabRegistration)
-        {
-            DiagLog.Log("PrefabRegistration", "SKIPPED via DiagnosticFlags.SkipPrefabRegistration");
-        }
-        else if (rouletteNob != null && spawnables != null)
-        {
-            int countBefore = spawnables.GetObjectCount();
-            spawnables.AddObject(rouletteNob, true);
-            DiagLog.Log("PrefabRegistration",
-                $"registered on this peer. {DiagLog.NetRoles()} spawner={__instance.gameObject.name} " +
-                $"countBefore={countBefore} countAfter={spawnables.GetObjectCount()} " +
-                $"PrefabId={rouletteNob.PrefabId} CollectionId={rouletteNob.SpawnableCollectionId}");
-        }
-        else
-        {
-            // The silent-skip path. If this ever appears in a client log, A1 is confirmed.
-            DiagLog.Log("PrefabRegistration",
-                $"!! SKIPPED — table not mutated on this peer. {DiagLog.NetRoles()} " +
-                $"spawner={__instance.gameObject.name} " +
-                $"NetworkManager={(networkManager == null ? "NULL" : "ok")} " +
-                $"SpawnablePrefabs={(spawnables == null ? "NULL" : "ok")} " +
-                $"rouletteNob={(rouletteNob == null ? "NULL" : "ok")}");
-        }
+        // Last-resort backstop only. The prefab is registered from NetworkManager.Awake
+        // (see RoulettePrefabRegistration), which is the only point early enough for a
+        // client joining a match in progress - by the time this Start runs, that client has
+        // already parsed the server's spawn batch and failed on it. This call normally finds
+        // the work already done and logs nothing; it stays because it costs one Contains and
+        // it is the only registration site that is guaranteed to run in an arena.
+        RoulettePrefabRegistration.EnsureRegistered("ItemSpawner.Start");
 
         if (!FishNet.InstanceFinder.IsServer) return;
 
