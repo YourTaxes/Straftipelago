@@ -203,6 +203,11 @@ public class ArchipelagoClient
             // thread: everything the room replayed on connect has arrived and been folded into
             // the pool by now, so a Death or a Health from here on is a new one.
             acceptOneShotItems = true;
+
+            // After the rebuild above, so this sees the checks the room has already recorded for
+            // this slot. A player who reconnects having already met the weapon goal has met it
+            // now too, and the room should hear so without another kill being needed.
+            GoalTracker.Evaluate();
         });
     }
 
@@ -222,6 +227,11 @@ public class ArchipelagoClient
         locationIdsByName = null;
         Authenticated = false;
         ready = false;
+
+        // The next room has its own thresholds and its own checked locations, and both goals
+        // re-derive from those on the next Evaluate - so keeping this session's answers could
+        // only ever be wrong.
+        GoalTracker.Reset();
 
         // So a socket that drops and is reconnected goes through the same replay-suppressing
         // open as a first connect, rather than inheriting the last session's answer.
@@ -247,6 +257,22 @@ public class ArchipelagoClient
         ready = !ready;
         session.SetClientState(ready ? ArchipelagoClientState.ClientReady : ArchipelagoClientState.ClientConnected);
         return ready;
+    }
+
+    /// <summary>
+    /// Tells the room this slot has finished, which is what completes the world.
+    /// </summary>
+    /// <remarks>
+    /// A StatusUpdate carrying ClientGoal. The apworld's two goals are EVENTS - no location id,
+    /// nothing sendable - so this single status is the whole of what the server can be told
+    /// about them. Sent by <see cref="GoalTracker"/>, which is also what decides that the room's
+    /// win_condition has actually been satisfied; this only puts it on the wire.
+    /// </remarks>
+    public void SendGoalCompletion()
+    {
+        if (!Authenticated || session == null) return;
+
+        session.SetGoalAchieved();
     }
 
     /// <summary>

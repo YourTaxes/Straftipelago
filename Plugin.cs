@@ -199,6 +199,17 @@ public class Plugin : BaseUnityPlugin
                 BepinLogger.LogError($"Failed to register roulette RPCs with Mycelium: {e}");
             }
 
+            // Before PatchAll, so the scene-load handler that clears its snapshot is
+            // subscribed by the time the patch it feeds can fire.
+            try
+            {
+                TakeTracker.Install();
+            }
+            catch (Exception e)
+            {
+                BepinLogger.LogError($"Failed to install the take counter: {e}");
+            }
+
             Harmony harmony = new Harmony(PluginGUID);
             harmony.PatchAll();
 

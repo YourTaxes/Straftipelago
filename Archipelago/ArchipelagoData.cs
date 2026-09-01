@@ -6,6 +6,23 @@ using Straftapelago.Finnegan_McD.org.Utils;
 
 namespace Straftapelago.Finnegan_McD.org.Archipelago;
 
+/// <summary>
+/// What the room asks of this slot before it counts as finished - the apworld's WinCondition
+/// Choice option, whose numbering these values have to match because slot data carries the
+/// number rather than the name.
+/// </summary>
+public enum GoalCondition
+{
+    /// <summary>Weapons_Complete alone.</summary>
+    WeaponKills = 0,
+
+    /// <summary>Takes_Complete alone.</summary>
+    Wins = 1,
+
+    /// <summary>Both events.</summary>
+    Both = 2,
+}
+
 public class ArchipelagoData
 {
     public string Uri;
@@ -51,6 +68,23 @@ public class ArchipelagoData
     /// <summary>Whether the flashlight starts in the roulette. Same no-check treatment.</summary>
     public bool UselessWeapons { get; private set; }
 
+    /// <summary>
+    /// Which of the room's two goals this slot has to meet to finish - the apworld's
+    /// WinCondition Choice option.
+    /// </summary>
+    public GoalCondition WinCondition { get; private set; } = GoalCondition.Both;
+
+    /// <summary>
+    /// How many takes have to be won for the Takes_Complete event, when the goal wants them.
+    /// </summary>
+    public int WinThreshold { get; private set; } = DefaultWinThreshold;
+
+    /// <summary>
+    /// What percentage of the check-carrying weapons have to have earned their first-kill check
+    /// for the Weapons_Complete event.
+    /// </summary>
+    public int WeaponGoalThreshold { get; private set; } = DefaultWeaponGoalThreshold;
+
     // The slot data keys the room publishes these options under. They are the option attribute
     // names from the apworld's StraftatOptions dataclass, which is what fill_slot_data's
     // options.as_dict() keys the dictionary on.
@@ -60,6 +94,26 @@ public class ArchipelagoData
     private const string NonDamagingWeaponsKey = "non_damaging_weapons";
     private const string UnusedWeaponsKey = "unused_weapons";
     private const string UselessWeaponsKey = "useless_weapons";
+    private const string WinConditionKey = "win_condition";
+    private const string WinThresholdKey = "win_threshold";
+    private const string WeaponGoalThresholdKey = "weapon_goal_threshold";
+
+    // The apworld's own defaults for the three goal options, used when the room sends none of
+    // them - which is what an apworld older than this mod does. Guessing "no goal at all" there
+    // would silently hand the player a world that completes on connect.
+    private const int DefaultWinThreshold = 5;
+    private const int DefaultWeaponGoalThreshold = 50;
+
+    // Deliberately wider than the apworld's WinThreshold Range (1-30). Every other clamp here
+    // protects a control that cannot display an out-of-range value; this one is a GOAL, and
+    // clamping a raised threshold down would quietly complete the world early. The upper bound
+    // is only here to reject a garbage value outright.
+    private const int WinThresholdMinimum = 1;
+    private const int WinThresholdMaximum = 1000;
+
+    // A percentage genuinely cannot be outside this, so clamping costs nothing.
+    private const int WeaponGoalThresholdMinimum = 0;
+    private const int WeaponGoalThresholdMaximum = 100;
 
     // The bounds of the apworld's NewWeaponChance Range option. A value outside them is clamped
     // rather than refused, because the Mod Menu slider this feeds is bound to the same range and
@@ -113,6 +167,13 @@ public class ArchipelagoData
         NonDamagingWeapons = ReadToggle(slotData, NonDamagingWeaponsKey, NonDamagingWeapons);
         UnusedWeapons = ReadToggle(slotData, UnusedWeaponsKey, UnusedWeapons);
         UselessWeapons = ReadToggle(slotData, UselessWeaponsKey, UselessWeapons);
+
+        WinCondition = (GoalCondition)ReadRange(slotData, WinConditionKey, (int)WinCondition,
+            (int)GoalCondition.WeaponKills, (int)GoalCondition.Both);
+        WinThreshold = ReadRange(slotData, WinThresholdKey, WinThreshold,
+            WinThresholdMinimum, WinThresholdMaximum);
+        WeaponGoalThreshold = ReadRange(slotData, WeaponGoalThresholdKey, WeaponGoalThreshold,
+            WeaponGoalThresholdMinimum, WeaponGoalThresholdMaximum);
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using HarmonyLib;
+using Straftapelago.Finnegan_McD.org.Archipelago;
 using Straftapelago.Finnegan_McD.org.Patches;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -29,6 +30,16 @@ namespace Straftapelago.Finnegan_McD.org.Utils;
 internal class ArchipelagoOverlay : MonoBehaviour
 {
     private const string HostName = "Straftapelago_Overlay";
+
+    // Shared by both panels, and all fractions of the screen rather than pixels so the
+    // overlay scales with resolution instead of assuming one - the same thing
+    // ArchipelagoConsole does. The two panels are stacked: the progress block sits
+    // directly above WeaponPanelTopFraction, which is where the weapon list starts.
+    private const float PanelLeftFraction = 0.02f;
+    private const float WeaponPanelTopFraction = 0.22f;
+    private const float PanelPaddingFraction = 0.006f;
+    private const float EntryHeightFraction = 0.022f;
+    private const float EntryFontFraction = 0.016f;
 
     /// <summary>Unity fake-null once destroyed, which is what drives re-creation.</summary>
     private static ArchipelagoOverlay instance;
@@ -113,36 +124,135 @@ internal class ArchipelagoOverlay : MonoBehaviour
             Plugin.BepinLogger.LogInfo($"[Overlay] drawing, frame={Time.frameCount}");
         }
 
+        // The pause gate for both panels, here rather than in each of them: they are one
+        // stacked block as far as the player is concerned, and a gate that let one through
+        // without the other would leave a stat box floating over an empty screen.
+        //
+        // Gated on pause so neither ever sits on top of gameplay, and hidden again once the
+        // player opens Settings from the pause menu: that screen is a full-width layout they
+        // would sit on top of, and pause stays true the whole time it is up. See
+        // InSettingsMenu. PauseManager.Instance is null-checked rather than assumed:
+        // HUDTween's own null-dereference of that singleton is one of the open crash
+        // candidates, so it is demonstrably not always there.
+        if (PauseManager.Instance == null || !PauseManager.Instance.pause) return;
+        if (InSettingsMenu()) return;
+
         // The connection UI that used to be here - the Archipelago version/status labels, the
         // host/slot/password text fields, the Connect button and the console window - is now
         // the mod's Mod Menu page (ArchipelagoMenu) and the killfeed (ArchipelagoConsole).
         // What is left is this mod's own unlocked-weapons panel, which was never part of that
         // default Archipelago GUI.
+        DrawSessionProgress();
         DrawObtainedWeapons();
     }
 
     /// <summary>
-    /// The local player's unlocked weapons, shown only while the game is paused.
+    /// The two numbers that say how the run is going, in a block directly above the weapon
+    /// list: takes won, and how much of the weapon roster has actually been earned.
+    /// </summary>
+    /// <remarks>
+    /// <para>The three lines have deliberately different spans, which is why each says its own.
+    /// Takes and rounds won are this session only - vanilla accumulates neither across matches,
+    /// so TakeTracker counts them from process start. Weapons earned is the seed's progress and
+    /// survives restarts, because it is rebuilt on connect from the locations the room says this
+    /// slot has already checked.</para>
+    /// <para>Earned means a first kill was scored with it and its check went out - the ticked
+    /// entries in the list below - not merely that the room granted it. The weapons that carry
+    /// no check are out of both halves of the fraction; see RouletteState.EarnedWeaponCount.</para>
+    /// <para>The first two lines are the room's two goals, so each carries the room's threshold
+    /// and takes a tick on the end once <see cref="GoalTracker"/> says that goal is achieved.
+    /// Both only
+    /// appear while connected: offline no room is asking for anything, and the apworld defaults
+    /// ServerData is holding are not a goal anyone agreed to. Rounds won has no goal behind it,
+    /// so it never takes a tick.</para>
+    /// </remarks>
+    private static void DrawSessionProgress()
+    {
+        float panelLeft = Screen.width * PanelLeftFraction;
+        float panelPadding = Screen.width * PanelPaddingFraction;
+        float entryHeight = Screen.height * EntryHeightFraction;
+        float headerHeight = entryHeight * 1.5f;
+
+        bool showGoals = ArchipelagoClient.Authenticated;
+        ArchipelagoData serverData = ArchipelagoClient.ServerData;
+
+        var lines = new List<(bool Achieved, string Text)>
+        {
+            (showGoals && GoalTracker.TakesGoalMet,
+                $"Takes won this session: {TakeTracker.TakesWon}"
+                + (showGoals ? $" (goal {serverData.WinThreshold})" : "")),
+        };
+
+        RouletteState roulette = Plugin.RouletteState;
+        int earned = roulette?.EarnedWeaponCount ?? 0;
+        int checkable = roulette?.CheckableWeaponCount ?? 0;
+
+        // Zero before the first match: the pool is built off SpawnerManager, which has no
+        // weapons until a player object exists, so there is genuinely no roster to be a fraction
+        // of yet. Said rather than shown as 0% of 0, which would read as progress having been
+        // lost.
+        lines.Add((showGoals && GoalTracker.WeaponsGoalMet, checkable > 0
+            // Floored, not rounded: 100% has to mean every check is in, and rounding would show
+            // it one weapon early on any roster of 67 or more. GoalTracker compares the same two
+            // numbers the same way, so the tick can never disagree with the percentage beside it.
+            ? $"Weapons earned: {Mathf.FloorToInt(earned * 100f / checkable)}% ({earned}/{checkable})"
+              + (showGoals ? $", goal {serverData.WeaponGoalThreshold}%" : "")
+            : "Weapons earned: waiting for the first match"));
+
+        lines.Add((false, $"Rounds won this session: {TakeTracker.RoundsWon}"));
+
+        // Packed to the width the longest line needs, with room for the tick that a met goal
+        // adds to the end of it, and capped to the same left-half budget the weapon list keeps
+        // to so it can never cover the pause menu either.
+        float entryWidth = Mathf.Min(Screen.width * 0.21f,
+            Screen.width * 0.5f - panelLeft - panelPadding * 2f);
+        float panelWidth = entryWidth + panelPadding * 2f;
+        float panelHeight = headerHeight + lines.Count * entryHeight + entryHeight * 0.5f;
+
+        // Bottom-anchored to the weapon list rather than given a top of its own, so the gap
+        // between the two blocks stays put whatever this one ends up containing.
+        float panelTop = Screen.height * WeaponPanelTopFraction - panelHeight - entryHeight * 0.5f;
+
+        GUI.Box(new Rect(panelLeft, panelTop, panelWidth, panelHeight), "");
+
+        GUIStyle style = EntryStyle();
+        float entryLeft = panelLeft + panelPadding;
+
+        GUI.Label(new Rect(entryLeft, panelTop + entryHeight * 0.25f, entryWidth, headerHeight),
+            "Progress", style);
+
+        for (int i = 0; i < lines.Count; i++)
+        {
+            // U+2713 on the end of the line, the same mark the weapon list puts after a weapon
+            // that has earned its check.
+            string text = lines[i].Achieved ? $"{lines[i].Text} ✓" : lines[i].Text;
+
+            GUI.Label(new Rect(entryLeft, panelTop + headerHeight + i * entryHeight, entryWidth, entryHeight),
+                text, style);
+        }
+    }
+
+    /// <summary>The one label style both panels draw with, so they cannot drift apart.</summary>
+    private static GUIStyle EntryStyle() =>
+        new GUIStyle(GUI.skin.label)
+        {
+            fontSize = (int)(Screen.height * EntryFontFraction),
+            normal = { textColor = Color.white },
+        };
+
+    /// <summary>
+    /// The local player's unlocked weapons. Drawn under the progress block, and like it only
+    /// while the game is paused - see <see cref="OnGUI"/> for that gate.
     /// </summary>
     /// <remarks>
     /// RouletteState holds this machine's player's pool and nothing else — the roll happens
     /// locally and only the chosen prefab is ever sent — so this needs no networking and is
     /// already the right list for whoever is looking at the screen.
     ///
-    /// Confined to the left half of the screen so it cannot cover the pause menu, and gated
-    /// on pause so it never sits on top of gameplay. PauseManager.Instance is null-checked
-    /// rather than assumed: HUDTween's own null-dereference of that singleton is one of the
-    /// open crash candidates, so it is demonstrably not always there.
-    ///
-    /// Hidden again once the player opens Settings from the pause menu: that screen is a
-    /// full-width layout the list would sit on top of, and pause stays true the whole time
-    /// it is up. See <see cref="InSettingsMenu"/>.
+    /// Confined to the left half of the screen so it cannot cover the pause menu.
     /// </remarks>
     private static void DrawObtainedWeapons()
     {
-        if (PauseManager.Instance == null || !PauseManager.Instance.pause) return;
-        if (InSettingsMenu()) return;
-
         RouletteState roulette = Plugin.RouletteState;
         if (roulette == null) return;
 
@@ -154,12 +264,10 @@ internal class ArchipelagoOverlay : MonoBehaviour
         int firstKillEarned = obtained.Count;
         obtained.AddRange(roulette.hasKill_Items);
 
-        // Sized off the screen like ArchipelagoConsole does, so it scales with resolution
-        // instead of assuming one.
-        float panelLeft = Screen.width * 0.02f;
-        float panelTop = Screen.height * 0.22f;
-        float panelPadding = Screen.width * 0.006f;
-        float entryHeight = Screen.height * 0.022f;
+        float panelLeft = Screen.width * PanelLeftFraction;
+        float panelTop = Screen.height * WeaponPanelTopFraction;
+        float panelPadding = Screen.width * PanelPaddingFraction;
+        float entryHeight = Screen.height * EntryHeightFraction;
         float headerHeight = entryHeight * 1.5f;
 
         // A weapon name is much narrower than the old 22%-of-screen column, so the columns are
@@ -193,11 +301,7 @@ internal class ArchipelagoOverlay : MonoBehaviour
 
         GUI.Box(new Rect(panelLeft, panelTop, panelWidth, panelHeight), "");
 
-        var style = new GUIStyle(GUI.skin.label)
-        {
-            fontSize = (int)(Screen.height * 0.016f),
-            normal = { textColor = Color.white },
-        };
+        GUIStyle style = EntryStyle();
 
         float firstColumnLeft = panelLeft + panelPadding;
         float firstEntryTop = panelTop + headerHeight;

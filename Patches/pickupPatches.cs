@@ -749,6 +749,16 @@ public class PlayerPickupUpdatePatch
             Plugin.BepinLogger.LogInfo($"Moved {moved} weapon(s) from unowned_items to obtained_Items. obtained_Items: {roulette.obtained_Items.Count}, unowned_items: {roulette.unowned_items.Count}");
         }
 
+        // The other half of I: everything unlocked is marked as already used. Two keypresses
+        // then put the pool in its finished state, which is how the weapon-goal percentage and
+        // its pause-menu tick get tested without playing out every first kill. Local only - no
+        // checks are sent, so a Reset takes it back.
+        if (Input.GetKeyDown(KeyCode.L))
+        {
+            int earned = roulette.MarkAllObtainedKillEarned();
+            Plugin.BepinLogger.LogInfo($"Moved {earned} weapon(s) from obtained_Items to hasKill_Items. hasKill_Items: {roulette.hasKill_Items.Count}, obtained_Items: {roulette.obtained_Items.Count}");
+        }
+
         // Proves the "New Weapon Chance is honoured, and the draw inside each list is
         // fair" requirement as a number in the log rather than as a claim about the code.
         if (Input.GetKeyDown(KeyCode.K))

@@ -111,6 +111,15 @@ public class RouletteState
     // Reset() reproduce the room's state instead of wiping it.
     private readonly List<string> receivedWeaponNames = new();
 
+    // The weapons that carry no Archipelago check, resolved fresh on every Reset(). Kept
+    // because the progress counters below cannot be read off the three lists alone: the
+    // no-check weapons are seeded straight INTO hasKill_Items (see SeedAlwaysUnlocked and
+    // SeedOfflineFallback), so counting that list raw would credit the player with earning a
+    // taser they can never send a check for. Holds every entry AlwaysUnlockedWeapons resolves,
+    // whatever its toggle says - a gate that is off leaves its weapon out of all three lists,
+    // where excluding it costs nothing.
+    private HashSet<GameObject> weaponsWithoutChecks = new();
+
     private bool initialized;
 
     // Held up while Reset() rebuilds. Every Grant it makes would otherwise dump the whole pool,
@@ -163,6 +172,7 @@ public class RouletteState
         // weapons are eligible to be locked at all. The lookups it goes through are built off
         // SpawnerManager, not off the pools, so they are available this early.
         Dictionary<GameObject, WeaponGate> alwaysUnlocked = ResolveAlwaysUnlockedWeapons();
+        weaponsWithoutChecks = new HashSet<GameObject>(alwaysUnlocked.Keys);
 
         if (allWeapons != null)
         {
@@ -206,6 +216,22 @@ public class RouletteState
             $"alwaysUnlocked={alwaysUnlocked.Count} " +
             $"unowned={unowned_items.Count} obtained={obtained_Items.Count} hasKill={hasKill_Items.Count}");
         LogPool();
+
+        // The first rebuild is where the weapon roster comes into existence, so it is the first
+        // moment the weapon goal can be judged at all - a player who reconnects already over the
+        // threshold meets it on the frame they enter a match, without another kill.
+        //
+        // Guarded because Reset() is reached from a Harmony prefix on PlayerPickup.Awake(), and
+        // throwing out of that skips the FishNet initialization that follows it. Nothing else in
+        // this method is allowed to throw either; see SeedOfflineFallback.
+        try
+        {
+            GoalTracker.Evaluate();
+        }
+        catch (Exception error)
+        {
+            Plugin.BepinLogger.LogError($"[RouletteState] the goal check threw after a rebuild: {error}");
+        }
     }
 
     /// <summary>
@@ -435,6 +461,44 @@ public class RouletteState
         return moved;
     }
 
+    /// <summary>
+    /// Credits a first kill to every unlocked weapon that has not earned one yet, in one pass.
+    /// Behind the L debug key.
+    /// </summary>
+    /// <remarks>
+    /// <para>GrantAllUnowned's other half: that one unlocks everything, this one marks everything
+    /// unlocked as used. Together they put the pool in its finished state in two keypresses,
+    /// which is what makes the weapon-goal percentage and its tick testable without playing out
+    /// seventy first kills.</para>
+    /// <para>Local only - no location check is sent, exactly like the I key it pairs with. The
+    /// room is the record of which kills happened (see <see cref="ReplayEarnedKills"/>), so the
+    /// next <see cref="Reset"/> puts every weapon this moved back in obtained_Items. Use
+    /// /ap_completecheck for a check the room will actually remember.</para>
+    /// <para>Not a loop over MarkKillEarned(): that calls LogPool() per weapon, so one keypress
+    /// would dump the whole pool dozens of times. One move, one log line.</para>
+    /// </remarks>
+    /// <returns>How many weapons moved into hasKill_Items.</returns>
+    public int MarkAllObtainedKillEarned()
+    {
+        int moved = 0;
+        foreach (GameObject weapon in obtained_Items)
+        {
+            if (weapon == null) continue;
+            if (hasKill_Items.Contains(weapon)) continue;
+
+            hasKill_Items.Add(weapon);
+            moved++;
+        }
+
+        obtained_Items.Clear();
+        LogPool();
+
+        // The share earned has just jumped, and the weapon goal is a share of the roster - so
+        // this is one of the moments it can be met, debug key or not.
+        GoalTracker.Evaluate();
+        return moved;
+    }
+
     /// <summary>Case-insensitive lookup over the game's own name-to-prefab dictionary.</summary>
     public GameObject Lookup(string weaponName)
     {
@@ -605,6 +669,45 @@ public class RouletteState
     }
 
     /// <summary>
+    /// How many of this build's check-carrying weapons the player has earned the first-kill
+    /// check for.
+    /// </summary>
+    /// <remarks>
+    /// hasKill_Items minus the weapons that carry no check, because those are seeded into that
+    /// list without a kill ever happening. What is left is exactly the set of first-kill
+    /// locations this slot has sent - the ticked entries in the pause-menu weapon list.
+    /// </remarks>
+    public int EarnedWeaponCount => CountWeaponsWithChecks(hasKill_Items);
+
+    /// <summary>
+    /// How many weapons in this build can earn a first-kill check at all - the denominator
+    /// <see cref="EarnedWeaponCount"/> is a fraction of.
+    /// </summary>
+    /// <remarks>
+    /// Every weapon is in exactly one of the three lists, so this is the whole weapon roster
+    /// less the ones with no check. Zero until the pool has been built, which is what the
+    /// caller has to check before dividing: EnsureInitialized only runs once a player object
+    /// exists, so out of a match there is no roster to count.
+    /// </remarks>
+    public int CheckableWeaponCount =>
+        CountWeaponsWithChecks(unowned_items)
+        + CountWeaponsWithChecks(obtained_Items)
+        + CountWeaponsWithChecks(hasKill_Items);
+
+    /// <summary>How many of these weapons have an Archipelago check behind them.</summary>
+    private int CountWeaponsWithChecks(List<GameObject> weapons)
+    {
+        int count = 0;
+        foreach (GameObject weapon in weapons)
+        {
+            if (weapon == null || weaponsWithoutChecks.Contains(weapon)) continue;
+            count++;
+        }
+
+        return count;
+    }
+
+    /// <summary>
     /// Credits a kill to the weapon that made it. The first kill with an unlocked weapon
     /// moves it to hasKill_Items and sends the Archipelago location check; every later kill
     /// with it does nothing.
@@ -630,6 +733,11 @@ public class RouletteState
 
         hasKill_Items.Add(prefab);
         LogPool();
+
+        // Before the check goes out rather than after, because it does not depend on the room's
+        // answer: the share earned is counted here, and a weapon that just moved into
+        // hasKill_Items has moved whatever the socket does next.
+        GoalTracker.Evaluate();
 
         // The prefab's display name rather than the name the kill path happened to resolve:
         // that one can be either namespace, and the room's locations are named after the
@@ -659,6 +767,10 @@ public class RouletteState
         // twice would give it two entries and double its odds in a roll.
         MoveToHasKill(prefab);
         LogPool();
+
+        // A check granted by hand counts towards the weapon goal like any other - it is the
+        // same move into hasKill_Items, and the room will have the same location recorded.
+        GoalTracker.Evaluate();
         return prefab;
     }
 
