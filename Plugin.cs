@@ -44,7 +44,17 @@ public class Plugin : BaseUnityPlugin
     public const string ChatCommandsDependencyGUID = "kestrel.straftat.chatcommands";
 
     public const string PluginGUID = "org.Finnegan_McD.Straftapelago";
-    public const string PluginName = "Straftapelago.Finnegan_McD.org";
+
+    // The mod's display name, and ONLY that: it is what BepInPlugin hands Mod Menu, which shows
+    // it on the mod list and on this mod's tab (ModMenuManager.Init reads Metadata.Name; the API
+    // can override the icon and the description but not this). Deliberately unlike the GUID
+    // above and the assembly name in the csproj, both of which stay
+    // Straftapelago.Finnegan_McD.org - the GUID keys the .cfg filename, Mod Menu's builder and
+    // icon registries and every BepInDependency anyone writes against this mod, and the assembly
+    // name keys the embedded resource paths and build.ps1's deploy. Changing either to match
+    // this would break those; they are not the same string by design.
+    public const string PluginName = "Straftipelago";
+
     public const string PluginVersion = "1.0.0";
 
     public const string ModDisplayInfo = $"{PluginName} v{PluginVersion}";

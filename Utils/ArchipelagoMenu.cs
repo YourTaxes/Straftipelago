@@ -15,6 +15,28 @@ namespace Straftapelago.Finnegan_McD.org.Utils;
 
 
 
+/// <summary>
+/// When the leaning modifier patches in metronomePatches are allowed to run.
+/// </summary>
+/// <remarks>
+/// An enum rather than a string with an AcceptableValueList, because that is what Mod Menu draws
+/// with its EnumDropdownOption prefab - the same control its own example plugin uses for
+/// TestEnum - and that prefab gives the dropdown a field wide enough to read. The list version
+/// takes the AcceptableListDropdownOption prefab instead, which is a much thinner field.
+///
+/// The cost is that the member names ARE the labels: Mod Menu fills the dropdown from
+/// Enum.GetNames, so they cannot carry spaces. Named to read as close to a sentence as
+/// identifiers allow, the way ModMenu's own example enum does.
+/// </remarks>
+internal enum LeaningModifierRemoval
+{
+    Always,
+    OnlyWhileInMetronomeMode,
+    Never,
+}
+
+
+
 /*
 This class creates the menu page for this mod's settings, as well as the archipelago login page.
 it extensivly ueses the ModMenu Api to style the settings well in that tab.
@@ -32,17 +54,8 @@ internal static class ArchipelagoMenu
     // this config determines if 2 handed weapons are placed in the user's hand, or if they are placed on the ground
     public static ConfigEntry<bool> RolledTwoHandedWeaponsOverride { get; private set; }
 
-    // The three answers to Remove Leaning Modifiers, as the dropdown spells them. Consts rather
-    // than an enum because Mod Menu builds an enum dropdown out of Enum.GetNames, which cannot
-    // carry a space - an AcceptableValueList of strings is what puts readable labels on the
-    // control. Named here so MetronomeMovement can compare against them without a second copy
-    // of the literals.
-    public const string LeaningModifiersAlways = "Always";
-    public const string LeaningModifiersInMetronomeMode = "Only while in metronome mode";
-    public const string LeaningModifiersNever = "Never";
-
     // when the leaning movement patches in metronomePatches are allowed to run
-    public static ConfigEntry<string> RemoveLeaningModifiers { get; private set; }
+    public static ConfigEntry<LeaningModifierRemoval> RemoveLeaningModifiers { get; private set; }
 
     // how often a roulette roll produces a weapon the player has not got a kill with yet
     public static ConfigEntry<int> NewWeaponChance { get; private set; }
@@ -161,21 +174,22 @@ internal static class ArchipelagoMenu
         // .cfg groups by section too, but sorts those groups alphabetically, so the file's own
         // order is its own business.
         //
-        // AcceptableValueList of strings, not an enum: Mod Menu builds an enum dropdown from
-        // Enum.GetNames, so the options would have to be spelled OnlyWhileInMetronomeMode. The
-        // list is what both puts a readable label on each choice and stops a hand-edited .cfg
-        // holding anything but one of the three.
+        // A plain enum entry with no AcceptableValues, which is what routes it to Mod Menu's
+        // EnumDropdownOption prefab and its full-width field. Attaching an AcceptableValueList
+        // here would send it to the much thinner AcceptableListDropdownOption instead - that
+        // branch is tested first in Mod Menu's Option.CreateForEntry. See LeaningModifierRemoval
+        // for why the member names read the way they do. BepInEx parses the enum back out of the
+        // .cfg itself, and falls back to the default for anything it does not recognise.
         RemoveLeaningModifiers = config.Bind("Movement", "Remove Leaning Modifiers",
-            LeaningModifiersInMetronomeMode,
-            new ConfigDescription(
-                "Leaning normally costs you speed, cannot be done in the air or while sliding, " +
-                "and drops your sprint. This decides when those penalties are taken off.\n\n" +
-                $"{LeaningModifiersAlways}: every match, all the time.\n\n" +
-                $"{LeaningModifiersInMetronomeMode}: only while a Metronome the multiworld sent " +
-                "you is counting down.\n\n" +
-                $"{LeaningModifiersNever}: the game is left alone.",
-                new AcceptableValueList<string>(
-                    LeaningModifiersAlways, LeaningModifiersInMetronomeMode, LeaningModifiersNever)));
+            LeaningModifierRemoval.OnlyWhileInMetronomeMode,
+            "Leaning normally costs you speed, cannot be done in the air or while sliding, and " +
+            "drops your sprint. This decides when those penalties are taken off.\n\n" +
+            "Always: every match, all the time.\n\n" +
+            "OnlyWhileInMetronomeMode: only while a Metronome the multiworld sent you is " +
+            "counting down.\n\n" +
+            "Never: the game is left alone. A Metronome will still swing you left and right - " +
+            "that is the trap, not a modifier - but you will pay the full price for every lean " +
+            "it puts you in.");
 
         GreenMode = config.Bind("Green Mode", "Green Mode", false,
             "Challenge me in Green Mode.");

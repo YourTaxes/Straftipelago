@@ -19,8 +19,19 @@ countdown itself.
 */
 
 /// <summary>
+/// Which way the Metronome trap is holding the player over on the current beat.
+/// </summary>
+internal enum MetronomeBeatLean
+{
+    None,
+    Left,
+    Right,
+}
+
+/// <summary>
 /// The room's Metronome trap: a countdown in the corner of the screen that beats
-/// "tick and tock and" into the kill feed until it runs out.
+/// "tick and tock and" into the kill feed until it runs out, swinging the player left and right
+/// in time with it.
 /// </summary>
 /// <remarks>
 /// <para>How long a Metronome runs and how fast it beats are both config entries -
@@ -41,6 +52,20 @@ internal static class MetronomeTrap
     private static readonly string[] TickWords = { "tick", "and", "tock", "and" };
 
     /// <summary>
+    /// Which way the trap holds the player over while each <see cref="TickWords"/> entry is the
+    /// last one printed - so the lean swings left on "tick", comes back up on the "and", swings
+    /// right on "tock", and comes back up again. Same length and same order as TickWords, which
+    /// is what lets one index carry both.
+    /// </summary>
+    private static readonly MetronomeBeatLean[] TickLeans =
+    {
+        MetronomeBeatLean.Left,
+        MetronomeBeatLean.None,
+        MetronomeBeatLean.Right,
+        MetronomeBeatLean.None,
+    };
+
+    /// <summary>
     /// Floor on the configured beat interval, so a hand-edited .cfg cannot make the
     /// catch-up loop in <see cref="Tick"/> run away. The config's own
     /// AcceptableValueRange already refuses anything smaller; this is the second belt.
@@ -59,6 +84,13 @@ internal static class MetronomeTrap
     private static int tickIndex;
 
     /// <summary>
+    /// Which way the trap is currently holding the player over. <see cref="MetronomeBeatLean.None"/>
+    /// until the first word is printed, which is why a countdown opens upright rather than
+    /// already leaning.
+    /// </summary>
+    private static MetronomeBeatLean beatLean = MetronomeBeatLean.None;
+
+    /// <summary>
     /// <see cref="Time.frameCount"/> of the last frame <see cref="Tick"/> actually spent time on.
     /// </summary>
     private static int lastCountedFrame = -1;
@@ -67,6 +99,19 @@ internal static class MetronomeTrap
     /// What the overlay draws. Zero means no countdown is running and nothing is drawn.
     /// </summary>
     public static float SecondsRemaining => secondsRemaining;
+
+    /// <summary>
+    /// Whether the trap is holding the player's lean, and which way.
+    /// </summary>
+    /// <remarks>
+    /// Read together, and only by <see cref="FirstPersonControllerLeanPenaltyPatch"/>: while
+    /// <see cref="ForcingLean"/> is true the player's own lean input is thrown away and
+    /// <see cref="CurrentBeatLean"/> is what they do instead.
+    /// </remarks>
+    public static bool ForcingLean => secondsRemaining > 0f;
+
+    /// <inheritdoc cref="ForcingLean"/>
+    public static MetronomeBeatLean CurrentBeatLean => beatLean;
 
     /// <summary>
     /// Whether the countdown is running down THIS frame, which is what the movement patches
@@ -124,9 +169,11 @@ internal static class MetronomeTrap
         secondsRemaining = seconds;
 
         // The beat starts from silence, so the first word lands one full interval in rather than
-        // on top of the start line.
+        // on top of the start line - and the player starts that interval upright, since nothing
+        // has been counted yet to hold them over.
         sinceLastTick = 0f;
         tickIndex = 0;
+        beatLean = MetronomeBeatLean.None;
 
         KillFeed.Write(FeedTag, $"Metronome{from} started - {seconds} seconds of tick tock");
     }
@@ -182,6 +229,12 @@ internal static class MetronomeTrap
             sinceLastTick -= tickSeconds;
             KillFeed.Write(FeedTag, TickWords[tickIndex]);
 
+            // The word and the lean are the same beat, so they are set from the same index in
+            // the same step - the player swings over as the word lands, and holds there until
+            // the next one. If a long frame covers several beats the last one wins, which is the
+            // beat they would be on had every frame been short.
+            beatLean = TickLeans[tickIndex];
+
             // Wrapped here rather than indexed with a modulo, so the counter cannot run away
             // over a long session and is always a legal index on its own.
             tickIndex = (tickIndex + 1) % TickWords.Length;
@@ -192,6 +245,10 @@ internal static class MetronomeTrap
         secondsRemaining = 0f;
         sinceLastTick = 0f;
         tickIndex = 0;
+
+        // Upright again, and ForcingLean goes false on the same line that zeroes the countdown,
+        // so the player has their own lean back from this frame on.
+        beatLean = MetronomeBeatLean.None;
         lastCountedFrame = -1;
         KillFeed.Write(FeedTag, "Metronome wound down");
     }
@@ -206,14 +263,16 @@ internal static class MetronomeTrap
 /// implemented yet, and receiving one currently changes nothing about the match.</para>
 /// <para>What it is meant to do, start a metronome for
 /// EVERYONE in the Straftat lobby EXCEPT FOR the receiving player, beating slowly at
-/// first and accelerating from there - time speeding up, which is where the name comes from. The
-/// pieces it will be built out of are all in this file already: <see cref="MetronomeTrap"/>'s
+/// first and accelerating from there - time speeding up, which is where the name comes from. 
+/// the timer for this should only stop when the round ends and all players are inactionable, and continues on the next round.
+/// The pieces it will be built out of are all in this file already: <see cref="MetronomeTrap"/>'s
 /// countdown and its <see cref="MetronomeTrap.IsCountingDown"/> gate, which the leaning modifier
 /// patches at the bottom read, plus a beat interval that shortens as the countdown runs instead
 /// of the fixed <see cref="ArchipelagoMenu.MetronomeTickSeconds"/> the trap uses.</para>
 /// <para> a caveat is that there should be in the config, but not seen by the in the modmenu, an option for the starting speed
 /// and the ending speed, and the current speed shoud be interpolated from what percentage of the way through the timer it is.
-/// the edge case is if a second instance of the buff happens while one is already going, then the max length that is being used for interpolation should be updated to match the new maxlength.</para>
+/// the edge case is if a second instance of the buff happens while one is already going sent by the same player, then the max length that is being used for interpolation should be updated to match the new maxlength.</para>
+/// <para> if a new instance of the buff is sent by a different player, then it restarts and the new one overrides the old. also, this buff overrides and ends any ongoing metrinome traps. 
 /// <para>The lobby-wide half is the part with no groundwork yet. Nobody else in the match is
 /// running an Archipelago client, so their game has to be told over the game's own network the
 /// way <see cref="RouletteNet"/> tells it about the weapon pool - a received buff cannot simply
@@ -362,13 +421,23 @@ public class PlayerHealthStunPatch
 The leaning modifier patches
 =====================================================================================
 
-Two patches on FirstPersonController that between them make leaning cost the player nothing:
-they move exactly as though they were standing straight, and they make exactly as much noise
-doing it. What leaning still does is look like a lean and see round the corner.
+Two patches on FirstPersonController, carrying both halves of what a Metronome does to the
+player's body:
 
-Neither reimplements any of vanilla's movement maths. They work by lying to vanilla about one or
-two booleans for the length of a single call, so the game's own code computes the unpenalised
-answer and everything downstream of it stays consistent by construction.
+- Leaning costs nothing. They move exactly as though they were standing straight, and make
+  exactly as much noise doing it. What leaning still does is look like a lean and see round the
+  corner - and it now also works airborne and mid-slide.
+
+- While a Metronome is counting, the beat leans FOR them. The lean swings left as "tick" lands
+  and holds there, comes up on the "and", swings right on "tock", comes up again on the next
+  "and", and repeats for as long as the countdown does. Their own lean keys do nothing until it
+  winds down. The two halves are gated separately - see the notes on
+  FirstPersonControllerLeanPenaltyPatch - because the dropdown decides what leaning COSTS and the
+  trap decides whether they are LEANING.
+
+Neither patch reimplements any of vanilla's movement maths. They work by lying to vanilla about
+one or two booleans for the length of a single call, so the game's own code computes the
+unpenalised answer and everything downstream of it stays consistent by construction.
 
 Vanilla hangs every leaning penalty off ONE field, `isLeaning`, which it recomputes at the very
 end of each Update as `isLeaningLeft || isLeaningRight`. Every read of it inside that same Update
@@ -431,15 +500,20 @@ internal static class MetronomeMovement
     {
         get
         {
-            string setting = ArchipelagoMenu.RemoveLeaningModifiers.Value;
+            switch (ArchipelagoMenu.RemoveLeaningModifiers.Value)
+            {
+                case LeaningModifierRemoval.Always:
+                    return true;
 
-            if (setting == ArchipelagoMenu.LeaningModifiersAlways) return true;
-            if (setting == ArchipelagoMenu.LeaningModifiersNever) return false;
+                case LeaningModifierRemoval.Never:
+                    return false;
 
-            // Metronome mode, and the fallback for anything else the entry could be holding.
-            // The config's AcceptableValueList already refuses a fourth value, so this is only
-            // ever reached as the middle choice.
-            return MetronomeTrap.IsCountingDown;
+                // OnlyWhileInMetronomeMode, and the fallback for anything else the entry could
+                // be holding - BepInEx parses the enum out of the .cfg and falls back to the
+                // default itself, so a fourth value never reaches this.
+                default:
+                    return MetronomeTrap.IsCountingDown;
+            }
         }
     }
 
@@ -464,10 +538,31 @@ internal static class MetronomeMovement
 
 /// <summary>
 /// Takes every penalty off leaning - speed, sprint and the free silence - by hiding the lean
-/// from vanilla's Update for the length of that call.
+/// from vanilla's Update for the length of that call, and, while a Metronome is running, decides
+/// which way the player leans instead of letting them.
 /// </summary>
 /// <remarks>
-/// <para>The postfix restores the field the same way vanilla's own last statement does, rather
+/// <para>Both jobs live in one patch class because they are two halves of one write. Vanilla
+/// works out isLeaningLeft/isLeaningRight from the player's input at IL_073C-IL_0814 and then
+/// derives isLeaning from the pair at IL_0824, all at the very end of Update. The postfix
+/// overwrites that pair with the beat and then redoes the derivation, in that order. Split across
+/// two postfixes it would be a coin toss: Harmony does not order postfixes on the same method
+/// against each other, so the derivation could run against the input lean rather than the
+/// beat.</para>
+/// <para>Overwriting the pair is also the whole of "the player cannot lean by hand during the
+/// trap". Vanilla's lean input has already been read and turned into those two booleans by the
+/// time this runs, so replacing them discards it; nothing else carries it forward, and the toggle
+/// latches behind it only ever feed the same two booleans.</para>
+/// <para>The forced lean is gated on <see cref="MetronomeTrap.ForcingLean"/>, NOT on
+/// <see cref="MetronomeMovement.Active"/>: the dropdown decides whether leaning costs the player
+/// anything, and the trap decides whether they are leaning. They are independent, so a player
+/// who set the dropdown to Never gets swung about AND pays vanilla's full price for it, which is
+/// the harsher trap and the honest reading of the setting.</para>
+/// <para>ForcingLean rather than <see cref="MetronomeTrap.IsCountingDown"/>, which is what the
+/// movement half reads: a countdown held because the player is dead or between rounds has its
+/// beat frozen too, and letting them straighten up in the meantime would put the lean out of step
+/// with the word last printed.</para>
+/// <para>The postfix restores isLeaning the same way vanilla's own last statement does, rather
 /// than putting back what the prefix saved. That is not belt and braces: vanilla's Update has an
 /// early return at IL_0816, taken when the player cannot move - frozen between rounds, stunned,
 /// dead - and it sits BEFORE the statement that rebuilds isLeaning. Without a postfix of our own
@@ -506,15 +601,36 @@ public class FirstPersonControllerLeanPenaltyPatch
         }
     }
 
-    static void Postfix(ref bool ___isLeaning, bool ___isLeaningLeft, bool ___isLeaningRight)
+    static void Postfix(FirstPersonController __instance, ref bool ___isLeaning,
+        ref bool ___isLeaningLeft, ref bool ___isLeaningRight)
     {
-        if (!suppressed) return;
+        bool wasSuppressed = suppressed;
         suppressed = false;
 
         try
         {
-            // Vanilla's own IL_0824, repeated. On a full Update this writes back the value it
-            // just wrote; on one that took the early return it is the value it would have.
+            // Asked once and reused, so the beat cannot change between the two writes and leave
+            // the player leaning both ways or neither.
+            bool forcing = MetronomeTrap.ForcingLean && __instance != null && __instance.IsOwner;
+
+            if (forcing)
+            {
+                MetronomeBeatLean beat = MetronomeTrap.CurrentBeatLean;
+
+                // Written unconditionally, both of them: on a None beat this is what stands the
+                // player back up, and on either of the others it is what throws away whatever
+                // their own lean keys asked for this frame.
+                ___isLeaningLeft = beat == MetronomeBeatLean.Left;
+                ___isLeaningRight = beat == MetronomeBeatLean.Right;
+            }
+
+            // Nothing was touched, so vanilla's own IL_0824 already stands.
+            if (!forcing && !wasSuppressed) return;
+
+            // Vanilla's own IL_0824, repeated - and it has to be repeated after a forced lean,
+            // because vanilla derived it from the input lean this just replaced. On a plain
+            // suppressed frame it writes back the value vanilla wrote; on one that took the
+            // early return it is the value vanilla would have written.
             ___isLeaning = ___isLeaningLeft || ___isLeaningRight;
         }
         catch (Exception error)
