@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using HarmonyLib;
+using MyceliumNetworking;
+using Steamworks;
 using Straftapelago.Finnegan_McD.org.Utils;
 using UnityEngine;
 
@@ -132,14 +134,26 @@ internal static class MetronomeTrap
     public static bool IsCountingDown =>
         secondsRemaining > 0f && Time.frameCount - lastCountedFrame <= 1;
 
+    /// <summary>How much held trap is waiting for a Made in Heaven to finish. See <see cref="Receive"/>.</summary>
+    private static int pendingSeconds;
+
+    /// <summary>Who sent the first held trap, so the line it eventually starts with names them.</summary>
+    private static string pendingSender;
+
     /// <summary>
-    /// Starts a countdown, or extends the one already running by the same amount.
+    /// Starts a countdown, extends the one already running by the same amount, or holds it back
+    /// until a Made in Heaven has finished.
     /// </summary>
     /// <remarks>
-    /// Extending rather than restarting is what makes two traps in quick succession worse than
-    /// one, instead of the second silently replacing the first. The beat is left where it is on
-    /// an extension - the metronome never stopped, so restarting its phase would only make it
-    /// stutter.
+    /// <para>Extending rather than restarting is what makes two traps in quick succession worse
+    /// than one, instead of the second silently replacing the first. The beat is left where it is
+    /// on an extension - the metronome never stopped, so restarting its phase would only make it
+    /// stutter.</para>
+    /// <para>A Made in Heaven outranks the trap, so one that arrives while a Made in Heaven is
+    /// running is not spent against it - it waits, and <see cref="ReleaseHeld"/> starts it when
+    /// the buff runs out. Several held traps add up the same way two live ones would, so nothing
+    /// is lost by the wait. This is not the same as the trap a Made in Heaven lands ON TOP of,
+    /// which is cancelled outright by <see cref="Cancel"/>.</para>
     /// </remarks>
     /// <param name="sender">The slot that sent the trap, for the line the player is shown.
     /// Blank or null drops the clause rather than naming nobody.</param>
@@ -156,7 +170,53 @@ internal static class MetronomeTrap
             return;
         }
 
-        string from = string.IsNullOrWhiteSpace(sender) ? "" : $" from {sender}";
+        if (MadeInHeavenBuff.Running)
+        {
+            pendingSeconds += seconds;
+
+            // The first one held is the one that gets named when the queue is released. Later
+            // ones only add their seconds - one line cannot credit four different slots, and the
+            // first is the one the player was told about first.
+            if (string.IsNullOrWhiteSpace(pendingSender)) pendingSender = sender;
+
+            KillFeed.Write(FeedTag,
+                $"A Metronome{FromClause(sender)} is waiting for Made in Heaven to finish - " +
+                $"{pendingSeconds}s held");
+            return;
+        }
+
+        Start(seconds, sender);
+    }
+
+    /// <summary>
+    /// Starts whatever was held back while a Made in Heaven ran. Called by
+    /// <see cref="MadeInHeavenBuff"/> as its countdown ends.
+    /// </summary>
+    public static void ReleaseHeld()
+    {
+        if (pendingSeconds < 1) return;
+
+        int seconds = pendingSeconds;
+        string sender = pendingSender;
+
+        // Cleared before starting, not after: Start writes to the kill feed, and leaving the
+        // queue armed across that call is how a re-entrant one would be released twice.
+        pendingSeconds = 0;
+        pendingSender = null;
+
+        Start(seconds, sender);
+    }
+
+    /// <summary>The " from X" on the end of a line, or nothing at all when X is not known.</summary>
+    private static string FromClause(string sender) =>
+        string.IsNullOrWhiteSpace(sender) ? "" : $" from {sender}";
+
+    /// <summary>
+    /// Puts <paramref name="seconds"/> on the clock, starting it if it is not already going.
+    /// </summary>
+    private static void Start(int seconds, string sender)
+    {
+        string from = FromClause(sender);
 
         if (secondsRemaining > 0f)
         {
@@ -176,6 +236,31 @@ internal static class MetronomeTrap
         beatLean = MetronomeBeatLean.None;
 
         KillFeed.Write(FeedTag, $"Metronome{from} started - {seconds} seconds of tick tock");
+    }
+
+    /// <summary>
+    /// Ends the running countdown early, if there is one, and stands the player back up.
+    /// </summary>
+    /// <remarks>
+    /// A Made in Heaven overrules a Metronome, so this exists for
+    /// <see cref="MadeInHeavenBuff"/> to call on every client as one activates. It is the same
+    /// reset the countdown does when it runs out, minus the "wound down" line - the trap did not
+    /// wind down, it was taken away, and the caller says so in its own words.
+    /// </remarks>
+    /// <returns>Whether there was anything to cancel, so the caller can stay quiet if not.</returns>
+    public static bool Cancel()
+    {
+        if (secondsRemaining <= 0f) return false;
+
+        secondsRemaining = 0f;
+        sinceLastTick = 0f;
+        tickIndex = 0;
+
+        // Both of these matter beyond tidiness: ForcingLean reads secondsRemaining and the lean
+        // patch reads beatLean, so between them this is what lets go of the player's lean.
+        beatLean = MetronomeBeatLean.None;
+        lastCountedFrame = -1;
+        return true;
     }
 
     /// <summary>
@@ -259,46 +344,374 @@ internal static class MetronomeTrap
 /// <see cref="PlayerHealthBuff"/>, and the one <c>buff_type</c> defaults to.
 /// </summary>
 /// <remarks>
-/// <para>SKELETON. The item is recognised, announced and logged; none of the effect below is
-/// implemented yet, and receiving one currently changes nothing about the match.</para>
-/// <para>What it is meant to do, start a metronome for
-/// EVERYONE in the Straftat lobby EXCEPT FOR the receiving player, beating slowly at
-/// first and accelerating from there - time speeding up, which is where the name comes from. 
-/// the timer for this should only stop when the round ends and all players are inactionable, and continues on the next round.
-/// The pieces it will be built out of are all in this file already: <see cref="MetronomeTrap"/>'s
-/// countdown and its <see cref="MetronomeTrap.IsCountingDown"/> gate, which the leaning modifier
-/// patches at the bottom read, plus a beat interval that shortens as the countdown runs instead
-/// of the fixed <see cref="ArchipelagoMenu.MetronomeTickSeconds"/> the trap uses.</para>
-/// <para> a caveat is that there should be in the config, but not seen by the in the modmenu, an option for the starting speed
-/// and the ending speed, and the current speed shoud be interpolated from what percentage of the way through the timer it is.
-/// the edge case is if a second instance of the buff happens while one is already going sent by the same player, then the max length that is being used for interpolation should be updated to match the new maxlength.</para>
-/// <para> if a new instance of the buff is sent by a different player, then it restarts and the new one overrides the old. also, this buff overrides and ends any ongoing metrinome traps. 
-/// <para>The lobby-wide half is the part with no groundwork yet. Nobody else in the match is
-/// running an Archipelago client, so their game has to be told over the game's own network the
-/// way <see cref="RouletteNet"/> tells it about the weapon pool - a received buff cannot simply
-/// be applied on every machine the way a local trap is.</para>
-/// <para>Main-thread only, like the trap: <c>ArchipelagoClient.ApplyReceivedItem</c> queues this
-/// through <see cref="MainThreadActions"/> rather than calling it on the websocket thread.</para>
+/// <para>PARTIAL. What works: the announcement on the activating player's screen, the
+/// announcement on everybody else's, cancelling any Metronome trap the activation lands on top
+/// of, and a countdown that every machine in the lobby runs together and every machine can see.
+/// What is NOT here yet is the effect itself - the accelerating metronome that is supposed to
+/// beat for everyone except the activating player, its start/end speed config entries, and the
+/// interpolation between them. The countdown is the clock that will drive it.</para>
+/// <para>The lobby-wide half goes over Mycelium, through <see cref="MadeInHeavenNet"/>. It has
+/// to: nobody else in the match is running an Archipelago client, so the only way their game
+/// hears about this is the same P2P channel <see cref="RouletteNet"/> uses for the weapon pool.
+/// The length travels with the message rather than each machine reading its own
+/// <see cref="ArchipelagoMenu.MadeInHeavenSeconds"/>, so the lobby counts one countdown rather
+/// than several of different lengths.</para>
+/// <para>Two messages, not one. The activation starts it everywhere; then at the end of every
+/// round the host broadcasts what is left on ITS clock and every client adopts that
+/// (<see cref="AdoptRemaining"/>). Each machine spends its own copy off its own Time.deltaTime
+/// and holds it on its own frames, so without that they drift apart over a long countdown - and
+/// a client that missed the activation or joined afterwards would never have started one at
+/// all. The host is the arbiter for the same reason it is in the roulette: somebody has to be,
+/// and it is the one peer everybody already agrees on.</para>
+/// <para>Overriding rather than extending, which is the opposite of what
+/// <see cref="MetronomeTrap.Receive"/> does with a second trap: a second Made in Heaven throws
+/// the first one away and starts again at full length, whoever sent it.</para>
+/// <para>The countdown holds between rounds - <see cref="Tick"/> is gated on
+/// <c>PauseManager.BetweenRounds</c>, which vanilla raises in InvokeBeforeSpawn and lowers in
+/// InvokeRoundStarted - and it is driven from ArchipelagoOverlay.Update rather than from
+/// PlayerHealth.Update the way the trap's is. That is deliberate: this clock belongs to the
+/// lobby, not to the local player, so it must keep running while they are dead, spectating or
+/// waiting to respawn, and PlayerHealth.Update stops in all three.</para>
+/// <para>Main-thread only, like the trap: <c>ArchipelagoClient.ApplyReceivedItem</c> queues
+/// <see cref="Receive"/> through <see cref="MainThreadActions"/> rather than calling it on the
+/// websocket thread, and the RPC arrives on Mycelium's own main-thread pump.</para>
 /// </remarks>
 internal static class MadeInHeavenBuff
 {
     /// <summary>The tag every line this buff writes is filed under in LogOutput.log.</summary>
     private const string FeedTag = "MadeInHeaven";
 
+    /// <summary>What the activating player says as it goes off.</summary>
+    private const string ActivationCry = "I will remake this universe according to my master's plan!";
+
+    /// <summary>What everyone else is told, with the activating player's name in it.</summary>
+    private const string RemoteActivationFormat = "{0} has activated the ultimate stand!";
+
+    /// <summary>The name shown when the activating player's own name cannot be resolved.</summary>
+    private const string UnknownActivator = "Someone";
+
+    private static float secondsRemaining;
+
     /// <summary>
-    /// Takes delivery of one Made in Heaven from the room.
+    /// Last frame's <c>PauseManager.BetweenRounds</c>, so <see cref="Tick"/> can see the moment a
+    /// round ends rather than only that one has. That edge is the resync point.
+    /// </summary>
+    private static bool wasBetweenRounds;
+
+    /// <summary>
+    /// What the overlay draws, in the slot the Metronome countdown otherwise uses. Zero means
+    /// nothing is running and nothing is drawn.
+    /// </summary>
+    public static float SecondsRemaining => secondsRemaining;
+
+    /// <summary>Whether a Made in Heaven is running at all, held between rounds included.</summary>
+    public static bool Running => secondsRemaining > 0f;
+
+    /// <summary>
+    /// Takes delivery of one Made in Heaven from the room. Runs only on the machine the
+    /// multiworld gave it to.
     /// </summary>
     /// <param name="sender">The slot that sent it, for the line the player is shown. Blank or
     /// null drops the clause rather than naming nobody, the same as
     /// <see cref="MetronomeTrap.Receive"/>.</param>
     public static void Receive(string sender)
     {
-        string from = string.IsNullOrWhiteSpace(sender) ? "" : $" from {sender}";
+        int seconds = ArchipelagoMenu.MadeInHeavenSeconds.Value;
 
-        // Said out loud even though nothing happens yet. A buff that arrives in silence is
-        // indistinguishable from one the mod never received, which is the harder thing of the two
-        // to debug - and the same reason AllowOneShot reports the ones it drops.
-        KillFeed.Write(FeedTag, $"Made in Heaven{from} - not implemented yet, nothing happens");
+        // Guarded rather than trusted even though the config's AcceptableValueRange starts at 1,
+        // for the same reason MetronomeTrap.Receive guards its own: a zero would announce a
+        // countdown to the whole lobby that ends on the frame it starts.
+        if (seconds < 1)
+        {
+            Plugin.BepinLogger.LogWarning(
+                $"[{FeedTag}] a Made in Heaven arrived but the configured length is {seconds} " +
+                "seconds; ignoring it.");
+            return;
+        }
+
+        string from = string.IsNullOrWhiteSpace(sender) ? "" : $" from {sender}";
+        Plugin.BepinLogger.LogInfo($"[{FeedTag}] activating a Made in Heaven{from} for {seconds}s");
+
+        // The activating player's own line, and their own copy of the countdown, applied here
+        // rather than waiting for the broadcast to come back around. Mycelium may or may not
+        // deliver a broadcast to the sender, and MadeInHeavenNet ignores our own message either
+        // way, so this is the one and only place the local half happens.
+        KillFeed.Write(FeedTag, ActivationCry);
+        Begin(seconds);
+
+        MadeInHeavenNet.Announce(KillFeed.LocalPlayerName, seconds);
+    }
+
+    /// <summary>
+    /// Starts the countdown on THIS machine, having been told about an activation somewhere in
+    /// the lobby. Called from <see cref="MadeInHeavenNet"/> for a remote one.
+    /// </summary>
+    /// <param name="playerName">Whoever set it off, as the lobby knows them.</param>
+    /// <param name="seconds">The length they activated it for, so every machine counts the same.</param>
+    public static void ReceiveRemote(string playerName, int seconds)
+    {
+        if (seconds < 1)
+        {
+            Plugin.BepinLogger.LogWarning(
+                $"[{FeedTag}] a Made in Heaven arrived over the network with a length of " +
+                $"{seconds} seconds; ignoring it.");
+            return;
+        }
+
+        string who = string.IsNullOrWhiteSpace(playerName) ? UnknownActivator : playerName;
+
+        KillFeed.Write(FeedTag, string.Format(RemoteActivationFormat, who));
+        Begin(seconds);
+    }
+
+    /// <summary>
+    /// Takes the host's word for how much is left. Called from <see cref="MadeInHeavenNet"/> on
+    /// every client as a round ends.
+    /// </summary>
+    /// <remarks>
+    /// <para>Two jobs in one message. The usual one is trimming drift off a countdown this
+    /// machine is already running, which is silent - a correction of a fraction of a second is
+    /// not news, and announcing one every round would be.</para>
+    /// <para>The other is repair: if this machine has no countdown at all it missed the
+    /// activation, or joined the lobby after it, so this is the first it has heard of it and the
+    /// rest of its state needs bringing into line the way <see cref="Begin"/> would have. That
+    /// case is worth a line, because a timer appearing in the corner with no explanation is
+    /// worse than an odd one.</para>
+    /// </remarks>
+    public static void AdoptRemaining(float seconds)
+    {
+        // The host only sends this while its own is running, so a zero here would be a message
+        // that outlived what it describes. Nothing to sync to.
+        if (seconds <= 0f) return;
+
+        bool wasRunning = Running;
+        float before = secondsRemaining;
+        secondsRemaining = seconds;
+
+        if (wasRunning)
+        {
+            Plugin.BepinLogger.LogDebug(
+                $"[{FeedTag}] resynced to the host: {before:0.00}s -> {seconds:0.00}s");
+            return;
+        }
+
+        Plugin.BepinLogger.LogInfo(
+            $"[{FeedTag}] the host reports a Made in Heaven with {seconds:0.00}s left that this " +
+            "machine knew nothing about; adopting it");
+
+        if (MetronomeTrap.Cancel())
+        {
+            KillFeed.Write(FeedTag, "The metronome stops.");
+        }
+
+        KillFeed.Write(FeedTag, "Made in Heaven is already under way.");
+    }
+
+    /// <summary>
+    /// The half every machine does the same way, wherever the activation came from: throw out
+    /// any Metronome trap it lands on, and start the countdown over.
+    /// </summary>
+    private static void Begin(int seconds)
+    {
+        // A Made in Heaven outranks a Metronome, so the trap goes - including the lean it was
+        // holding the player in, which Cancel releases. Reported only when there was actually
+        // one running, so a quiet activation stays quiet.
+        if (MetronomeTrap.Cancel())
+        {
+            KillFeed.Write(FeedTag, "The metronome stops.");
+        }
+
+        // Assignment, not addition: a second Made in Heaven replaces the first outright rather
+        // than extending it the way a second Metronome extends its trap.
+        secondsRemaining = seconds;
+    }
+
+    /// <summary>
+    /// Spends this frame of the countdown. Called every frame from ArchipelagoOverlay.Update,
+    /// which is this mod's one guaranteed main-thread callback and, unlike PlayerHealth.Update,
+    /// keeps running while the local player is dead or between spawns.
+    /// </summary>
+    public static void Tick()
+    {
+        // The one pause this countdown takes. A public STATIC field, unlike almost everything
+        // else on PauseManager: vanilla raises it in InvokeBeforeSpawn and lowers it in
+        // InvokeRoundStarted, so it is true for exactly the gap between rounds.
+        //
+        // Read and latched ahead of every early-out below, because it is the EDGE that matters
+        // for the resync: a tracker only updated on the frames that get past those returns would
+        // miss the very transition it exists to catch.
+        bool betweenRounds = PauseManager.BetweenRounds;
+        bool roundJustEnded = betweenRounds && !wasBetweenRounds;
+        wasBetweenRounds = betweenRounds;
+
+        // Cheap early-out for the overwhelmingly common case: this runs every frame of the
+        // session and almost none of them have a Made in Heaven running. It is also the "if the
+        // host still sees it has one ongoing" half of the resync below - with nothing running
+        // there is nothing to tell anyone about.
+        if (secondsRemaining <= 0f) return;
+
+        // Not in a match at all - the menu, or a scene with no PauseManager up yet. Held rather
+        // than spent, the same way it is held between rounds.
+        if (PauseManager.Instance == null) return;
+
+        // The host's clock is the lobby's clock. Every machine counts its own copy down off its
+        // own Time.deltaTime and holds it on its own frames, so they drift apart over a long
+        // countdown - and a client that missed the activation, or joined after it, has no copy at
+        // all. The gap between rounds is the right moment to put that right: nothing is being
+        // spent while it is open, so a correction cannot land in the middle of anything.
+        if (roundJustEnded && MyceliumNetwork.IsHost)
+        {
+            MadeInHeavenNet.Resync(secondsRemaining);
+        }
+
+        if (betweenRounds) return;
+
+        secondsRemaining -= Time.deltaTime;
+
+        if (secondsRemaining > 0f) return;
+
+        secondsRemaining = 0f;
+        KillFeed.Write(FeedTag, "Made in Heaven has run its course.");
+
+        // Zeroed BEFORE this call, because ReleaseHeld starts a trap that reads Running to
+        // decide whether to hold itself back again - and it would, forever, if this still
+        // said a Made in Heaven was going.
+        MetronomeTrap.ReleaseHeld();
+    }
+}
+
+/// <summary>
+/// Tells the rest of the Straftat lobby that a Made in Heaven has gone off.
+/// </summary>
+/// <remarks>
+/// <para>Separate from <see cref="RouletteNet"/> but on the same Mycelium mod id, which is the
+/// mod's and not the roulette's - Mycelium routes on (mod id, method name), so two registered
+/// objects under one id coexist as long as their method names differ.</para>
+/// <para>One message, one direction, no reply: every machine that hears it does exactly the same
+/// thing to its own copy of the game, and there is nothing for them to answer. The length rides
+/// along so the lobby counts one countdown rather than each machine counting its own
+/// <see cref="ArchipelagoMenu.MadeInHeavenSeconds"/>.</para>
+/// <para>Unreliable would be wrong here: a dropped activation would leave one player's game out
+/// of step with everyone else's for the length of the countdown, with no later message to put it
+/// right.</para>
+/// </remarks>
+internal class MadeInHeavenNet
+{
+    private static MadeInHeavenNet instance;
+
+    public static void Install()
+    {
+        if (instance != null) return;
+
+        instance = new MadeInHeavenNet();
+        MyceliumNetwork.RegisterNetworkObject(instance, RouletteNet.ModId);
+        Plugin.BepinLogger.LogInfo(
+            $"[MadeInHeaven] registered CustomRPCs under mod id {RouletteNet.ModId}");
+    }
+
+    /// <summary>
+    /// Broadcasts an activation to the lobby. Called on the machine the multiworld gave the buff
+    /// to, straight after it has applied its own half.
+    /// </summary>
+    public static void Announce(string playerName, int seconds)
+    {
+        if (instance == null)
+        {
+            Plugin.BepinLogger.LogError(
+                "[MadeInHeaven] MadeInHeavenNet.Install() never ran; the lobby will not hear about this");
+            return;
+        }
+
+        if (!MyceliumNetwork.InLobby)
+        {
+            // Offline or solo. The local half has already happened, so this is a note rather
+            // than a failure - there is simply nobody to tell.
+            Plugin.BepinLogger.LogInfo(
+                "[MadeInHeaven] not in a Steam lobby, so the activation stays on this machine");
+            return;
+        }
+
+        MyceliumNetwork.RPC(RouletteNet.ModId, nameof(ClientMadeInHeavenActivated),
+            ReliableType.Reliable, playerName, seconds);
+    }
+
+    /// <summary>
+    /// Runs on every machine in the lobby. The sender's own copy is dropped, because
+    /// <see cref="MadeInHeavenBuff.Receive"/> has already done its half with the line that
+    /// belongs to whoever set it off.
+    /// </summary>
+    [CustomRPC]
+    public void ClientMadeInHeavenActivated(string playerName, int seconds, RPCInfo info)
+    {
+        try
+        {
+            // A Mycelium broadcast DOES come back to its sender - RPCMasked walks
+            // MyceliumNetwork.Players and sends to each, and that array includes the local
+            // player. So this check is load-bearing, not defensive: without it the activating
+            // player would be told they have activated the ultimate stand, on top of having
+            // already said so themselves in Receive.
+            if (info.SenderSteamID == SteamUser.GetSteamID()) return;
+
+            Plugin.BepinLogger.LogInfo(
+                $"[MadeInHeaven] {playerName} ({info.SenderSteamID}) activated one for {seconds}s");
+
+            MadeInHeavenBuff.ReceiveRemote(playerName, seconds);
+        }
+        catch (Exception error)
+        {
+            // Swallowed rather than thrown back into Mycelium's message pump, which is draining
+            // every other mod's RPCs in the same loop.
+            Plugin.BepinLogger.LogError(
+                $"[MadeInHeaven] failed to apply a received activation{Environment.NewLine}{error}");
+        }
+    }
+
+    /// <summary>
+    /// Broadcasts how much of a running Made in Heaven is left. Sent by the host only, as a
+    /// round ends - see <see cref="MadeInHeavenBuff.Tick"/> for why that moment.
+    /// </summary>
+    /// <remarks>
+    /// A float, sent as one: Mycelium serializes System.Single natively, so there is no reason to
+    /// round the remainder to whole seconds and re-introduce error while correcting for it.
+    /// </remarks>
+    public static void Resync(float secondsRemaining)
+    {
+        if (instance == null || !MyceliumNetwork.InLobby) return;
+
+        MyceliumNetwork.RPC(RouletteNet.ModId, nameof(ClientMadeInHeavenResync),
+            ReliableType.Reliable, secondsRemaining);
+    }
+
+    /// <summary>
+    /// Runs on every machine in the lobby. Takes the host's remaining time as the truth.
+    /// </summary>
+    [CustomRPC]
+    public void ClientMadeInHeavenResync(float secondsRemaining, RPCInfo info)
+    {
+        try
+        {
+            // The host's own copy of its own broadcast. It is the source of truth, so there is
+            // nothing here for it to adopt.
+            if (info.SenderSteamID == SteamUser.GetSteamID()) return;
+
+            // Only the host may say what the time is. Mycelium delivers to whoever is listening,
+            // so without this a client whose own clock had drifted could hand its drift to the
+            // whole lobby - and two clients disagreeing would then fight over it every round.
+            if (info.SenderSteamID != MyceliumNetwork.LobbyHost)
+            {
+                Plugin.BepinLogger.LogWarning(
+                    $"[MadeInHeaven] ignoring a resync from {info.SenderSteamID}, who is not the " +
+                    $"lobby host ({MyceliumNetwork.LobbyHost})");
+                return;
+            }
+
+            MadeInHeavenBuff.AdoptRemaining(secondsRemaining);
+        }
+        catch (Exception error)
+        {
+            Plugin.BepinLogger.LogError(
+                $"[MadeInHeaven] failed to apply a resync{Environment.NewLine}{error}");
+        }
     }
 }
 

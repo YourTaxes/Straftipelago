@@ -209,6 +209,18 @@ public class Plugin : BaseUnityPlugin
                 BepinLogger.LogError($"Failed to register roulette RPCs with Mycelium: {e}");
             }
 
+            // Its own try/catch and its own registration, on the same Mycelium mod id: a Made in
+            // Heaven has to reach the rest of the lobby, and losing that must not also cost the
+            // roulette its own RPCs (or the other way round).
+            try
+            {
+                MadeInHeavenNet.Install();
+            }
+            catch (Exception e)
+            {
+                BepinLogger.LogError($"Failed to register Made in Heaven RPCs with Mycelium: {e}");
+            }
+
             // Before PatchAll, so the scene-load handler that clears its snapshot is
             // subscribed by the time the patch it feeds can fire.
             try

@@ -120,6 +120,13 @@ internal class ArchipelagoOverlay : MonoBehaviour
         ArchipelagoConsole.Pump();
         Killfeed.Pump();
 
+        // Here rather than on PlayerHealth.Update, where the Metronome trap's countdown lives:
+        // a Made in Heaven is the lobby's clock, not the local player's, so it has to keep
+        // running while they are dead, spectating or waiting to respawn - and PlayerHealth.Update
+        // stops in all three. This is the mod's one guaranteed per-frame main-thread callback,
+        // which is exactly what that needs. It holds itself between rounds; see MadeInHeavenBuff.
+        MadeInHeavenBuff.Tick();
+
         // Last of the three. An action here can write to either of the sinks above - applying
         // Green Mode puts a line in the killfeed - and draining it after them means such a line
         // waits a frame rather than sitting in a queue that has already been pumped.
@@ -137,7 +144,7 @@ internal class ArchipelagoOverlay : MonoBehaviour
         // Before the pause gate, because this one is not a paused panel: it is a trap running
         // against the player in real time, and a countdown they could only read by pausing
         // would be no countdown at all. It draws itself only while one is running.
-        DrawMetronomeCountdown();
+        DrawCountdowns();
 
         // The pause gate for both panels, here rather than in each of them: they are one
         // stacked block as far as the player is concerned, and a gate that let one through
@@ -171,13 +178,31 @@ internal class ArchipelagoOverlay : MonoBehaviour
     /// <para>Ceiling rather than rounding, so the last second is shown as 1 for the whole of
     /// itself and the box goes away on 0 instead of sitting there reading zero.</para>
     /// </remarks>
-    private static void DrawMetronomeCountdown()
+    private static void DrawCountdowns()
     {
-        float secondsRemaining = MetronomeTrap.SecondsRemaining;
+        // Made in Heaven takes the slot when it is running, because it outranks the trap - it
+        // cancels one outright on activation and holds back any that arrive while it runs. So the
+        // two are almost never both up; when they are, the trap sits directly underneath rather
+        // than on top of it. Drawn in that order so the higher-ranked clock keeps the corner.
+        int slot = 0;
+        if (MadeInHeavenBuff.Running)
+        {
+            DrawCountdownPanel(slot++, "Made in Heaven", MadeInHeavenBuff.SecondsRemaining);
+        }
+
+        DrawCountdownPanel(slot, "Metronome", MetronomeTrap.SecondsRemaining);
+    }
+
+    /// <summary>
+    /// One countdown box, <paramref name="slot"/> boxes down from the top left corner. Draws
+    /// nothing at all when there is no time on the clock, which is what lets the caller ask for
+    /// both and get only the ones that are running.
+    /// </summary>
+    private static void DrawCountdownPanel(int slot, string label, float secondsRemaining)
+    {
         if (secondsRemaining <= 0f) return;
 
         float panelLeft = Screen.width * PanelLeftFraction;
-        float panelTop = Screen.height * MetronomePanelTopFraction;
         float panelPadding = Screen.width * PanelPaddingFraction;
         float entryHeight = Screen.height * EntryHeightFraction;
         float headerHeight = entryHeight * 1.5f;
@@ -188,13 +213,18 @@ internal class ArchipelagoOverlay : MonoBehaviour
         float panelWidth = entryWidth + panelPadding * 2f;
         float panelHeight = headerHeight + entryHeight + entryHeight * 0.5f;
 
+        // Every box is the same height, so a slot is just that height plus a gap. Slot 0 is the
+        // corner the single-countdown case has always used.
+        float panelTop = Screen.height * MetronomePanelTopFraction
+            + slot * (panelHeight + entryHeight * 0.4f);
+
         GUI.Box(new Rect(panelLeft, panelTop, panelWidth, panelHeight), "");
 
         GUIStyle style = EntryStyle();
         float entryLeft = panelLeft + panelPadding;
 
         GUI.Label(new Rect(entryLeft, panelTop + entryHeight * 0.25f, entryWidth, headerHeight),
-            "Metronome", style);
+            label, style);
         GUI.Label(new Rect(entryLeft, panelTop + headerHeight, entryWidth, entryHeight),
             $"{Mathf.CeilToInt(secondsRemaining)}s left", style);
     }

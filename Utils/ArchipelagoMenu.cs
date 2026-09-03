@@ -72,6 +72,9 @@ internal static class ArchipelagoMenu
     // how long between the Metronome's tick/and/tock prints. not visible through modmenu
     public static ConfigEntry<float> MetronomeTickSeconds { get; private set; }
 
+    // how many seconds a Made in Heaven runs for. not visible through modmenu
+    public static ConfigEntry<int> MadeInHeavenSeconds { get; private set; }
+
     // gates the I/O/P/K roulette debug keys in PlayerPickupUpdatePatch
     public static ConfigEntry<bool> DebugButtons { get; private set; }
 
@@ -90,11 +93,12 @@ internal static class ArchipelagoMenu
         // hide green tint, so that it is still modifiable, but not as easy as the others
         ModMenuCustomisation.HideEntry(GreenModeTintRgb);
 
-        // The two Metronome knobs are hidden for the same reason: they tune a trap the room
-        // inflicts, so they are meant to be set once in the .cfg rather than reached for from
-        // the pause menu while one is running.
+        // The Traps knobs are hidden for the same reason: they tune what the room inflicts, so
+        // they are meant to be set once in the .cfg rather than reached for from the pause menu
+        // while one is running.
         ModMenuCustomisation.HideEntry(MetronomeTrapSeconds);
         ModMenuCustomisation.HideEntry(MetronomeTickSeconds);
+        ModMenuCustomisation.HideEntry(MadeInHeavenSeconds);
 
         Sprite icon = LoadIcon();
         if (icon != null) ModMenuCustomisation.SetPluginIcon(icon);
@@ -237,6 +241,24 @@ internal static class ArchipelagoMenu
                 "'and' round and round for as long as the countdown lasts.\n\n" +
                 "Not shown in the Mod Menu page; edit it here.",
                 new AcceptableValueRange<float>(0.05f, 10f)));
+
+        // Only the ACTIVATING player's copy of this is used: the number travels to the rest of
+        // the lobby in the Mycelium message, so everyone counts the same countdown down rather
+        // than each running their own local setting. Whoever the room gave the buff to decides
+        // how long the match wears it.
+        MadeInHeavenSeconds = config.Bind("Traps", "Made in Heaven Seconds",
+            60,
+            new ConfigDescription(
+                "How many seconds a Made in Heaven runs for once it is activated. A second one " +
+                "does not add to the first - it replaces it, and the countdown restarts at this " +
+                "many seconds.\n\n" +
+                "The countdown holds between rounds and picks up again when the next one " +
+                "starts.\n\n" +
+                "Only your own copy of this setting matters, and only when the multiworld gives " +
+                "the buff to YOU: the length is sent to everyone else in the lobby along with " +
+                "the activation.\n\n" +
+                "Not shown in the Mod Menu page; edit it here.",
+                new AcceptableValueRange<int>(1, 600)));
 
         // Bound after the Green Mode entries so the Debug section sits below them, in the
         // .cfg and on the Mod Menu page alike.
