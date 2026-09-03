@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using HarmonyLib;
 using Straftapelago.Finnegan_McD.org.Utils;
 using UnityEngine;
-using UnityEngine.InputSystem;
 
 namespace Straftapelago.Finnegan_McD.org.Patches;
 
@@ -205,13 +204,16 @@ internal static class MetronomeTrap
 /// <remarks>
 /// <para>SKELETON. The item is recognised, announced and logged; none of the effect below is
 /// implemented yet, and receiving one currently changes nothing about the match.</para>
-/// <para>What it is meant to do, from the roadmap in the apworld's README: start a metronome for
-/// EVERYONE in the Straftat lobby rather than for the receiving player alone, beating slowly at
+/// <para>What it is meant to do, start a metronome for
+/// EVERYONE in the Straftat lobby EXCEPT FOR the receiving player, beating slowly at
 /// first and accelerating from there - time speeding up, which is where the name comes from. The
 /// pieces it will be built out of are all in this file already: <see cref="MetronomeTrap"/>'s
 /// countdown and its <see cref="MetronomeTrap.IsCountingDown"/> gate, which the leaning modifier
 /// patches at the bottom read, plus a beat interval that shortens as the countdown runs instead
 /// of the fixed <see cref="ArchipelagoMenu.MetronomeTickSeconds"/> the trap uses.</para>
+/// <para> a caveat is that there should be in the config, but not seen by the in the modmenu, an option for the starting speed
+/// and the ending speed, and the current speed shoud be interpolated from what percentage of the way through the timer it is.
+/// the edge case is if a second instance of the buff happens while one is already going, then the max length that is being used for interpolation should be updated to match the new maxlength.</para>
 /// <para>The lobby-wide half is the part with no groundwork yet. Nobody else in the match is
 /// running an Archipelago client, so their game has to be told over the game's own network the
 /// way <see cref="RouletteNet"/> tells it about the weapon pool - a received buff cannot simply
@@ -360,33 +362,57 @@ public class PlayerHealthStunPatch
 The leaning modifier patches
 =====================================================================================
 
-Three patches on FirstPersonController that between them take the movement penalties off
-leaning. While they are on:
+Two patches on FirstPersonController that between them make leaning cost the player nothing:
+they move exactly as though they were standing straight, and they make exactly as much noise
+doing it. What leaning still does is look like a lean and see round the corner.
 
-- Sprint flags. isSprinting and isSlideSprinting are recomputed from just "not aiming, holding
-  a direction, sprint held" - plus "not crouching" for the plain one - so a lean no longer drops
-  the player out of a sprint.
+Neither reimplements any of vanilla's movement maths. They work by lying to vanilla about one or
+two booleans for the length of a single call, so the game's own code computes the unpenalised
+answer and everything downstream of it stays consistent by construction.
 
-- Lean speed. Every speedFactor branch in vanilla's CalculateMovementInput carries a
-  `&& !isLeaning`, which is why leaning bleeds speed away to the global deceleration. The
-  sprint-air, air, crouch and sprint branches are run again without that condition, so a lean
-  keeps its speed. The re-run happens whether or not the player is actually leaning, so on a
-  frame they are not, that branch's Lerp lands a second time on the value vanilla just wrote and
-  the ramp up to top speed is quicker. Both halves of that are the effect.
+Vanilla hangs every leaning penalty off ONE field, `isLeaning`, which it recomputes at the very
+end of each Update as `isLeaningLeft || isLeaningRight`. Every read of it inside that same Update
+is a penalty, and all four are meant to go:
 
-- Lean anywhere. Vanilla's HandleCameraLean only leans while `!isSliding && isGrounded`. Both
-  conditions are dropped, so the lean also works airborne and mid-slide.
+    @818   CalculateMovementInput()   every speedFactor branch is guarded `&& !isLeaning`, so a
+                                      lean drops through them all to the global deceleration -
+                                      that is the speed loss
+    @892   HandleFootsteps()          returns early on `isLeaning || isCrouching` - that is the
+                                      free silence, and a player moving at full sprint speed has
+                                      not earned it
+    @1655  isSprinting      = !isLeaning && !isAiming && moving && !isCrouching && funcSprint
+    @1717  isSlideSprinting = !isLeaning && !isAiming && moving && funcSprint
+    @2084  isLeaning = isLeaningLeft || isLeaningRight
 
-WHEN they are on is ArchipelagoMenu.RemoveLeaningModifiers, read through MetronomeMovement.Active:
-always, never, or - the default - only while a Metronome countdown is running, which is what
-makes that trap change how the game plays rather than only how it looks.
+So clearing `isLeaning` for the length of Update is the whole of the first patch, and vanilla
+rebuilds the field from the two directional flags before the method returns. Those four reads are
+exhaustive: a search of the whole assembly finds no other reader of `isLeaning` inside Update's
+call tree, and the only readers anywhere else are FPArms.Update (the viewmodel), which runs
+outside the window entirely.
 
-All three are confined to the local player with IsOwner: the flags, the speed and the camera
-they write are this machine's player's, and none of it should ever reach another player's copy.
+Footstep timing comes out right on its own, because it is driven by playerSpeed and
+movementFactor - which CalculateMovementInput has already computed without the penalty by the
+time HandleFootsteps runs - so the steps land at the cadence of the speed actually being moved at.
+
+The camera still leans. That runs off isLeaningLeft/isLeaningRight, which are never touched, and
+which are also what HandleAnimation, HandleCameraLean and CameraLean read - CameraLean only ever
+writes leanCamera.localRotation, so leaning has no effect on the player's position or collider in
+the first place.
+
+WHERE you may lean is the one thing not on `isLeaning`: HandleCameraLean gates its two lean cases
+on `!isSliding && isGrounded`, so the second patch clears those for the length of that one call
+and puts them back.
+
+WHEN all this is on is ArchipelagoMenu.RemoveLeaningModifiers, read through
+MetronomeMovement.Active: always, never, or - the default - only while a Metronome countdown is
+running, which is what makes that trap change how the game plays rather than only how it looks.
+
+Both are confined to the local player with IsOwner: the state they touch is this machine's
+player's, and neither should ever reach another player's copy.
 */
 
 /// <summary>
-/// When the three leaning patches below may act, and where they report a failure.
+/// When the two leaning patches below may act, and where they report a failure.
 /// </summary>
 internal static class MetronomeMovement
 {
@@ -437,139 +463,122 @@ internal static class MetronomeMovement
 }
 
 /// <summary>
-/// Holds the sprint flags through a lean.
+/// Takes every penalty off leaning - speed, sprint and the free silence - by hiding the lean
+/// from vanilla's Update for the length of that call.
 /// </summary>
+/// <remarks>
+/// <para>The postfix restores the field the same way vanilla's own last statement does, rather
+/// than putting back what the prefix saved. That is not belt and braces: vanilla's Update has an
+/// early return at IL_0816, taken when the player cannot move - frozen between rounds, stunned,
+/// dead - and it sits BEFORE the statement that rebuilds isLeaning. Without a postfix of our own
+/// a single frozen frame would leave the field false until the next frame that ran to the end,
+/// and the arms would be drawn out of a lean while the player held one.</para>
+/// <para>The latch, rather than testing <see cref="MetronomeMovement.Active"/> a second time:
+/// the postfix must undo exactly what the prefix did, and re-asking a question whose answer can
+/// change - the countdown ending, the dropdown being moved - is how a field gets left
+/// clobbered.</para>
+/// <para>A plain static latch is safe here: only the local player's controller passes the gate,
+/// and Update is not reentrant.</para>
+/// </remarks>
 [HarmonyPatch(typeof(FirstPersonController), "Update")]
-public class FirstPersonControllerSprintFlagsPatch
+public class FirstPersonControllerLeanPenaltyPatch
 {
-    static void Postfix(FirstPersonController __instance, ref bool ___isSprinting,
-        ref bool ___isSlideSprinting, bool ___isAiming, bool ___isCrouching, bool ___funcSprint,
-        InputAction ___move)
+    private static bool suppressed;
+
+    static void Prefix(FirstPersonController __instance, ref bool ___isLeaning)
     {
+        suppressed = false;
+
         try
         {
             if (!MetronomeMovement.Active || !__instance.IsOwner) return;
 
-            // Read once and shared by both lines: it is the same value in the same frame.
-            bool moving = ___move.ReadValue<Vector2>() != Vector2.zero;
-
-            ___isSprinting = !___isAiming && moving && !___isCrouching && ___funcSprint;
-            ___isSlideSprinting = !___isAiming && moving && ___funcSprint;
+            // Everything follows from this one line. See the block comment above for the four
+            // places vanilla reads it before the end of this Update.
+            ___isLeaning = false;
+            suppressed = true;
         }
         catch (Exception error)
         {
             // Swallowed like every other patch in this mod: a movement effect that cannot be
             // applied must not abandon the rest of the player's Update.
-            MetronomeMovement.ReportOnce(nameof(FirstPersonControllerSprintFlagsPatch), error);
+            MetronomeMovement.ReportOnce(nameof(FirstPersonControllerLeanPenaltyPatch), error);
         }
     }
-}
 
-/// <summary>
-/// Stops a lean bleeding off the player's speed.
-/// </summary>
-[HarmonyPatch(typeof(FirstPersonController), "CalculateMovementInput")]
-public class FirstPersonControllerLeanSpeedPatch
-{
-    static void Postfix(FirstPersonController __instance, SlopeSlide ___slopeSlideScript,
-        Slope ___slopeScript, CharacterController ___characterController, bool ___funcSprint,
-        InputAction ___move, ref float ___speedFactor, bool ___isCrouching, bool ___isSprinting,
-        float ___sprintAirSpeed, float ___sprintAirAcceleration, float ___airSpeed,
-        float ___airAcceleration, float ___crouchSpeed, float ___crouchAcceleration,
-        float ___sprintSpeed, float ___sprintAcceleration)
+    static void Postfix(ref bool ___isLeaning, bool ___isLeaningLeft, bool ___isLeaningRight)
     {
+        if (!suppressed) return;
+        suppressed = false;
+
         try
         {
-            if (!MetronomeMovement.Active || !__instance.IsOwner) return;
-
-            // Vanilla's own outer condition: crouch-sliding up a slope is its one case that
-            // skips the whole speedFactor block, and this must not put speed back into it.
-            if (___slopeSlideScript.isCrouchSlopeSliding && ___slopeScript.uphill) return;
-
-            if (!___characterController.isGrounded && ___funcSprint && ___move.ReadValue<Vector2>().magnitude != 0f)
-            {
-                ___speedFactor = Mathf.Round(Mathf.Lerp(___speedFactor, ___sprintAirSpeed,
-                    ___sprintAirAcceleration * Time.deltaTime) * 100f) * 0.01f;
-            }
-            else if (!___characterController.isGrounded && ___move.ReadValue<Vector2>().magnitude != 0f)
-            {
-                ___speedFactor = Mathf.Round(Mathf.Lerp(___speedFactor, ___airSpeed,
-                    ___airAcceleration * Time.deltaTime) * 100f) * 0.01f;
-            }
-            else if (___isCrouching && ___move.ReadValue<Vector2>().magnitude != 0f && ___characterController.isGrounded)
-            {
-                ___speedFactor = Mathf.Round(Mathf.Lerp(___speedFactor, ___crouchSpeed,
-                    ___crouchAcceleration * Time.deltaTime) * 100f) * 0.01f;
-            }
-            else if (___isSprinting && ___move.ReadValue<Vector2>().magnitude != 0f)
-            {
-                ___speedFactor = Mathf.Round(Mathf.Lerp(___speedFactor, ___sprintSpeed,
-                    ___sprintAcceleration * Time.deltaTime) * 100f) * 0.01f;
-            }
+            // Vanilla's own IL_0824, repeated. On a full Update this writes back the value it
+            // just wrote; on one that took the early return it is the value it would have.
+            ___isLeaning = ___isLeaningLeft || ___isLeaningRight;
         }
         catch (Exception error)
         {
-            MetronomeMovement.ReportOnce(nameof(FirstPersonControllerLeanSpeedPatch), error);
+            MetronomeMovement.ReportOnce(nameof(FirstPersonControllerLeanPenaltyPatch), error);
         }
     }
 }
 
 /// <summary>
-/// Lets the player lean airborne and while sliding.
+/// Lets the player lean airborne and while sliding, by hiding both of those states from
+/// vanilla's HandleCameraLean for the length of that call.
 /// </summary>
 /// <remarks>
-/// <para>A full-method replacement, which <c>StraftatModAttribute.Documentation</c> warns
-/// against and which this mod already does in six other places - but the vanilla method has no
-/// seam to hook: the two conditions being dropped sit inside the same <c>if</c> as the call that
-/// does the work, so there is nothing to postfix into. It is at least a replacement that stands
-/// down completely whenever <see cref="MetronomeMovement.Active"/> is false, which the other six
-/// do not.</para>
-/// <para>CameraLean is private, so it is reached through a delegate built on first use and
-/// cached - this runs every frame, and resolving it each time would compile a dynamic method
-/// sixty times a second for the same call.</para>
+/// Vanilla leans only while `!isSliding &amp;&amp; isGrounded`; with those two saying "on the
+/// ground, not sliding" it takes its normal lean path, and the values go back before anything
+/// else can read them. HandleCameraLean neither writes them nor calls anything that reads them -
+/// its one call out is CameraLean, which reads only isLeaningLeft/isLeaningRight and writes only
+/// leanCamera.localRotation - so the window is exactly this method and the swap cannot be
+/// observed from outside it.
 /// </remarks>
 [HarmonyPatch(typeof(FirstPersonController), "HandleCameraLean")]
 public class FirstPersonControllerLeanAnywherePatch
 {
-    /// <summary>
-    /// Vanilla's private <c>CameraLean(Quaternion)</c>. Null until first use, and left null if
-    /// it cannot be resolved - in which case this patch stands aside and vanilla runs.
-    /// </summary>
-    private static Action<FirstPersonController, Quaternion> cameraLean;
+    private static bool swapped;
+    private static bool wasSliding;
+    private static bool wasGrounded;
 
-    static bool Prefix(FirstPersonController __instance, bool ___isLeaningRight,
-        bool ___isLeaningLeft, float ___leanLimit)
+    static void Prefix(FirstPersonController __instance, ref bool ___isSliding, ref bool ___isGrounded)
     {
+        swapped = false;
+
         try
         {
-            if (!MetronomeMovement.Active || !__instance.IsOwner) return true;
+            if (!MetronomeMovement.Active || !__instance.IsOwner) return;
 
-            cameraLean ??= AccessTools.MethodDelegate<Action<FirstPersonController, Quaternion>>(
-                AccessTools.Method(typeof(FirstPersonController), "CameraLean"));
+            wasSliding = ___isSliding;
+            wasGrounded = ___isGrounded;
 
-            // Vanilla's own three cases, with its `!isSliding && isGrounded` guard on the first
-            // two dropped - that omission is the whole of this patch.
-            if (___isLeaningRight)
-            {
-                cameraLean(__instance, Quaternion.Euler(0f, 0f, -___leanLimit));
-                return false;
-            }
-
-            if (___isLeaningLeft)
-            {
-                cameraLean(__instance, Quaternion.Euler(0f, 0f, ___leanLimit));
-                return false;
-            }
-
-            cameraLean(__instance, Quaternion.Euler(0f, 0f, 0f));
-            return false;
+            ___isSliding = false;
+            ___isGrounded = true;
+            swapped = true;
         }
         catch (Exception error)
         {
-            // True, not false: a replacement that threw has done nothing, so vanilla must still
-            // get its turn or the camera would simply stop levelling out.
             MetronomeMovement.ReportOnce(nameof(FirstPersonControllerLeanAnywherePatch), error);
-            return true;
+        }
+    }
+
+    static void Postfix(ref bool ___isSliding, ref bool ___isGrounded)
+    {
+        if (!swapped) return;
+        swapped = false;
+
+        try
+        {
+            ___isSliding = wasSliding;
+            ___isGrounded = wasGrounded;
+        }
+        catch (Exception error)
+        {
+            // A failure here leaves the player permanently grounded and never sliding as far as
+            // the rest of the frame is concerned, so this one is worth the log line on its own.
+            MetronomeMovement.ReportOnce(nameof(FirstPersonControllerLeanAnywherePatch), error);
         }
     }
 }
