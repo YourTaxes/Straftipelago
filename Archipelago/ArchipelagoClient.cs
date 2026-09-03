@@ -441,19 +441,22 @@ public class ArchipelagoClient
     private static readonly string[] LazerTiers = { "BeamLoad", "HandCanon", "BlankState" };
 
     /// <summary>
-    /// The apworld's filler items: two traps and a buff.
+    /// The apworld's filler items: two traps and two buffs.
     /// </summary>
     /// <remarks>
-    /// The two traps are separate ITEMS rather than one item whose behaviour a setting decides.
-    /// The apworld's trap_type option picks which of them fills the pool's trap slots, so the name
-    /// the room sends already says which trap arrived and nothing here has to read slot data to
-    /// find out. trap_type is in slot data all the same, but only so the player can see it.
+    /// Each of the four is a separate ITEM rather than one item whose behaviour a setting decides.
+    /// The apworld's trap_type option picks which trap fills the pool's trap slots and its
+    /// buff_type option picks which buff fills the rest, so the name the room sends already says
+    /// which one arrived and nothing here has to read slot data to find out. Neither option is in
+    /// slot data at all, for that reason.
     /// </remarks>
     private const string DeathTrapItem = "Death";
 
     private const string MetronomeTrapItem = "Metronome";
 
     private const string HealthBuffItem = "Health";
+
+    private const string MadeInHeavenBuffItem = "Made in Heaven";
 
     /// <summary>How many Progressive Lazers this session has already been given.</summary>
     private int lazerTiersReceived;
@@ -522,6 +525,15 @@ public class ArchipelagoClient
                 if (!AllowOneShot(itemName)) return;
 
                 MainThreadActions.Enqueue(PlayerHealthBuff.Enqueue);
+                return;
+
+            case MadeInHeavenBuffItem:
+                if (!AllowOneShot(itemName)) return;
+
+                // Guarded by AllowOneShot like the other three, and queued for the same reason:
+                // everything the buff does is main-thread work, and this runs on the websocket
+                // thread.
+                MainThreadActions.Enqueue(() => MadeInHeavenBuff.Receive(sender));
                 return;
 
             case ProgressiveLazerItem:

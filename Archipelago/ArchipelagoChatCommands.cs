@@ -207,7 +207,7 @@ public static class ArchipelagoChatCommands
     /// version. This is the way out when it accepts something newer than this list.
     /// </remarks>
     // standard command that lets you use other commands besides 
-    [Command("ap", "Say something to the Archipelago room verbatim. Quote it: /ap '!hint pistol'")]
+    [Command("ap", "Say something to the Archipelago room verbatim. Quote it: /ap '!hint pistol' for hinting the pistol, /ap 'hello' for saying hello in chat.")]
     public static void Say(string message)
     {
         Dispatch(message);

@@ -32,6 +32,18 @@ internal static class ArchipelagoMenu
     // this config determines if 2 handed weapons are placed in the user's hand, or if they are placed on the ground
     public static ConfigEntry<bool> RolledTwoHandedWeaponsOverride { get; private set; }
 
+    // The three answers to Remove Leaning Modifiers, as the dropdown spells them. Consts rather
+    // than an enum because Mod Menu builds an enum dropdown out of Enum.GetNames, which cannot
+    // carry a space - an AcceptableValueList of strings is what puts readable labels on the
+    // control. Named here so MetronomeMovement can compare against them without a second copy
+    // of the literals.
+    public const string LeaningModifiersAlways = "Always";
+    public const string LeaningModifiersInMetronomeMode = "Only while in metronome mode";
+    public const string LeaningModifiersNever = "Never";
+
+    // when the leaning movement patches in metronomePatches are allowed to run
+    public static ConfigEntry<string> RemoveLeaningModifiers { get; private set; }
+
     // how often a roulette roll produces a weapon the player has not got a kill with yet
     public static ConfigEntry<int> NewWeaponChance { get; private set; }
 
@@ -131,9 +143,6 @@ internal static class ArchipelagoMenu
             "on the ground.\n\nOn: Anything held is dropped and the weapon is taken in both " +
             "hands, the same way picking a two-handed weapon up off the floor works.");
 
-        // Bound immediately after the two-handed override so it sits directly below it in
-        // the Roulette section, in the .cfg and on the Mod Menu page alike.
-        //
         // AcceptableValueRange is what makes Mod Menu draw this as a bounded slider rather
         // than a free-text int, and it is also what stops a hand-edited .cfg putting a value
         // outside 1-100 into the roll.
@@ -145,6 +154,28 @@ internal static class ArchipelagoMenu
                 "with - so at 40, four rolls in ten are new weapons and six are old ones.\n\n" +
                 "If either group is empty the roll comes from the other one regardless.",
                 new AcceptableValueRange<int>(1, 100)));
+
+        // Bound after the last Roulette entry, so the Movement heading it opens sits directly
+        // below the Roulette block on the Mod Menu page: Mod Menu walks a plugin's entries in
+        // the order they were bound and starts a new heading whenever the section changes. The
+        // .cfg groups by section too, but sorts those groups alphabetically, so the file's own
+        // order is its own business.
+        //
+        // AcceptableValueList of strings, not an enum: Mod Menu builds an enum dropdown from
+        // Enum.GetNames, so the options would have to be spelled OnlyWhileInMetronomeMode. The
+        // list is what both puts a readable label on each choice and stops a hand-edited .cfg
+        // holding anything but one of the three.
+        RemoveLeaningModifiers = config.Bind("Movement", "Remove Leaning Modifiers",
+            LeaningModifiersInMetronomeMode,
+            new ConfigDescription(
+                "Leaning normally costs you speed, cannot be done in the air or while sliding, " +
+                "and drops your sprint. This decides when those penalties are taken off.\n\n" +
+                $"{LeaningModifiersAlways}: every match, all the time.\n\n" +
+                $"{LeaningModifiersInMetronomeMode}: only while a Metronome the multiworld sent " +
+                "you is counting down.\n\n" +
+                $"{LeaningModifiersNever}: the game is left alone.",
+                new AcceptableValueList<string>(
+                    LeaningModifiersAlways, LeaningModifiersInMetronomeMode, LeaningModifiersNever)));
 
         GreenMode = config.Bind("Green Mode", "Green Mode", false,
             "Challenge me in Green Mode.");
@@ -335,6 +366,7 @@ internal static class ArchipelagoMenu
             if (entry == null) return false;
 
             return entry == RolledTwoHandedWeaponsOverride
+                || entry == RemoveLeaningModifiers
                 || entry == NewWeaponChance
                 || entry == GreenMode
                 || entry == GreenModeTintRgb
