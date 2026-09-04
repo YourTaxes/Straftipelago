@@ -124,8 +124,8 @@ internal class ArchipelagoOverlay : MonoBehaviour
         // a Made in Heaven is the lobby's clock, not the local player's, so it has to keep
         // running while they are dead, spectating or waiting to respawn - and PlayerHealth.Update
         // stops in all three. This is the mod's one guaranteed per-frame main-thread callback,
-        // which is exactly what that needs. It holds itself between rounds; see MadeInHeavenBuff.
-        MadeInHeavenBuff.Tick();
+        // which is exactly what that needs. It holds itself between rounds; see MadeInHeaven.
+        MadeInHeaven.Tick();
 
         // Last of the three. An action here can write to either of the sinks above - applying
         // Green Mode puts a line in the killfeed - and draining it after them means such a line
@@ -185,9 +185,9 @@ internal class ArchipelagoOverlay : MonoBehaviour
         // two are almost never both up; when they are, the trap sits directly underneath rather
         // than on top of it. Drawn in that order so the higher-ranked clock keeps the corner.
         int slot = 0;
-        if (MadeInHeavenBuff.Running)
+        if (MadeInHeaven.Running)
         {
-            DrawCountdownPanel(slot++, "Made in Heaven", MadeInHeavenBuff.SecondsRemaining);
+            DrawCountdownPanel(slot++, "Made in Heaven", MadeInHeaven.SecondsRemaining);
         }
 
         DrawCountdownPanel(slot, "Metronome", MetronomeTrap.SecondsRemaining);

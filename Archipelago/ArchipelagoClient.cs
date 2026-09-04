@@ -533,7 +533,7 @@ public class ArchipelagoClient
                 // Guarded by AllowOneShot like the other three, and queued for the same reason:
                 // everything the buff does is main-thread work, and this runs on the websocket
                 // thread.
-                MainThreadActions.Enqueue(() => MadeInHeavenBuff.Receive(sender));
+                MainThreadActions.Enqueue(() => MadeInHeaven.Receive(sender));
                 return;
 
             case ProgressiveLazerItem:

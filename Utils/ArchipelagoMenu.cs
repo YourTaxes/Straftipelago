@@ -69,11 +69,17 @@ internal static class ArchipelagoMenu
     // how many seconds the Metronome trap's countdown runs for. not visible through modmenu
     public static ConfigEntry<int> MetronomeTrapSeconds { get; private set; }
 
-    // how long between the Metronome's tick/and/tock prints. not visible through modmenu
+    // how long the Metronome holds each lean of its tick/and/tock/and swing. not visible through modmenu
     public static ConfigEntry<float> MetronomeTickSeconds { get; private set; }
 
     // how many seconds a Made in Heaven runs for. not visible through modmenu
     public static ConfigEntry<int> MadeInHeavenSeconds { get; private set; }
+
+    // the beat interval a Made in Heaven opens on, before it accelerates. not visible through modmenu
+    public static ConfigEntry<float> MadeInHeavenStartTickSeconds { get; private set; }
+
+    // the beat interval a Made in Heaven ends on, its fastest. not visible through modmenu
+    public static ConfigEntry<float> MadeInHeavenEndTickSeconds { get; private set; }
 
     // gates the I/O/P/K roulette debug keys in PlayerPickupUpdatePatch
     public static ConfigEntry<bool> DebugButtons { get; private set; }
@@ -99,6 +105,8 @@ internal static class ArchipelagoMenu
         ModMenuCustomisation.HideEntry(MetronomeTrapSeconds);
         ModMenuCustomisation.HideEntry(MetronomeTickSeconds);
         ModMenuCustomisation.HideEntry(MadeInHeavenSeconds);
+        ModMenuCustomisation.HideEntry(MadeInHeavenStartTickSeconds);
+        ModMenuCustomisation.HideEntry(MadeInHeavenEndTickSeconds);
 
         Sprite icon = LoadIcon();
         if (icon != null) ModMenuCustomisation.SetPluginIcon(icon);
@@ -234,11 +242,16 @@ internal static class ArchipelagoMenu
                 "Not shown in the Mod Menu page; edit it here.",
                 new AcceptableValueRange<int>(1, 600)));
 
+        // Still named "Tick" because that is what the beat is called and because renaming the key
+        // would orphan the value in every existing .cfg. What it times changed, though: the beat
+        // is a lean now, not a line in the kill feed.
         MetronomeTickSeconds = config.Bind("Traps", "Metronome Tick Seconds",
             0.5f,
             new ConfigDescription(
-                "How long between the Metronome's prints, which beat 'tick', 'and', 'tock', " +
-                "'and' round and round for as long as the countdown lasts.\n\n" +
+                "How long the Metronome holds you in each lean. It beats 'tick' (leaning left), " +
+                "'and' (upright), 'tock' (leaning right), 'and' (upright), round and round for " +
+                "as long as the countdown lasts, and you cannot lean by hand while it does.\n\n" +
+                "Smaller is faster and much harder to fight.\n\n" +
                 "Not shown in the Mod Menu page; edit it here.",
                 new AcceptableValueRange<float>(0.05f, 10f)));
 
@@ -259,6 +272,34 @@ internal static class ArchipelagoMenu
                 "the activation.\n\n" +
                 "Not shown in the Mod Menu page; edit it here.",
                 new AcceptableValueRange<int>(1, 600)));
+
+        // The two ends of the ramp. Sent to the lobby with the activation for the same reason the
+        // length is: the beat takes hold of people's leaning, so it has to be the same beat for
+        // everyone rather than whatever each machine happens to have in its own .cfg.
+        MadeInHeavenStartTickSeconds = config.Bind("Traps", "Made in Heaven Start Tick Seconds",
+            1f,
+            new ConfigDescription(
+                "How long each lean is held at the START of a Made in Heaven, before it begins " +
+                "to accelerate. Bigger is slower.\n\n" +
+                "The metronome swings everyone in the lobby EXCEPT whoever activated it, and " +
+                "speeds up smoothly from this toward Made in Heaven End Tick Seconds as the " +
+                "countdown runs out.\n\n" +
+                "Only the activating player's copy is used; it is sent to the rest of the lobby " +
+                "with the activation.\n\n" +
+                "Not shown in the Mod Menu page; edit it here.",
+                new AcceptableValueRange<float>(0.05f, 10f)));
+
+        MadeInHeavenEndTickSeconds = config.Bind("Traps", "Made in Heaven End Tick Seconds",
+            0.15f,
+            new ConfigDescription(
+                "How long each lean is held by the END of a Made in Heaven, at its fastest. " +
+                "Smaller is faster.\n\n" +
+                "Setting this LARGER than Made in Heaven Start Tick Seconds is allowed and simply " +
+                "runs the ramp backwards, slowing down instead of speeding up.\n\n" +
+                "Only the activating player's copy is used; it is sent to the rest of the lobby " +
+                "with the activation.\n\n" +
+                "Not shown in the Mod Menu page; edit it here.",
+                new AcceptableValueRange<float>(0.05f, 10f)));
 
         // Bound after the Green Mode entries so the Debug section sits below them, in the
         // .cfg and on the Mod Menu page alike.

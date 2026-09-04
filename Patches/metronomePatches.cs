@@ -9,10 +9,19 @@ using UnityEngine;
 namespace Straftapelago.Finnegan_McD.org.Patches;
 
 /*
-Everything metronome-shaped lives in this one file: the trap the room sends, the countdown it
-runs, the leaning modifier patches that countdown switches on, and the Made in Heaven buff -
-which is the same metronome aimed at the whole lobby instead of at one player, so it will want
-this countdown and this "is one running" gate rather than a second pair of its own.
+Everything metronome-shaped lives in this one file: the rhythm itself, the trap the room sends,
+the Made in Heaven buff - which is the same rhythm aimed at the whole lobby except the player who
+activated it, accelerating as it goes - and the leaning modifier patches the two of them switch on.
+
+MetronomeBeat is the rhythm and the only beat loop here. The trap drives it at a fixed interval
+and Made in Heaven at one that shortens as its countdown runs; neither owns the phase, so the two
+cannot drift apart, and there is one implementation of the swing rather than two. They never
+overlap - a Made in Heaven cancels a trap already running, and a trap that arrives during one is
+queued until it ends - so a single shared phase is correct and not merely convenient.
+
+The beat is a lean and nothing else. It used to print "tick"/"and"/"tock"/"and" to the kill feed;
+those words survive only as the names of the four phases, because at the speeds Made in Heaven
+reaches near its end the feed would be unreadable.
 
 The leaning modifier patches at the bottom are here because the trap is what usually switches
 them on. They are not the trap's alone, though: Remove Leaning Modifiers can put them on for
@@ -31,35 +40,29 @@ internal enum MetronomeBeatLean
 }
 
 /// <summary>
-/// The room's Metronome trap: a countdown in the corner of the screen that beats
-/// "tick and tock and" into the kill feed until it runs out, swinging the player left and right
-/// in time with it.
+/// The metronome's rhythm: the thing that actually swings the player left and right, and the one
+/// beat loop in the mod.
 /// </summary>
 /// <remarks>
-/// <para>How long a Metronome runs and how fast it beats are both config entries -
-/// <see cref="ArchipelagoMenu.MetronomeTrapSeconds"/> and
-/// <see cref="ArchipelagoMenu.MetronomeTickSeconds"/> - rather than numbers the apworld sends,
-/// because neither is part of the two repos' slot-data contract. Both are hidden from the Mod
-/// Menu page for the same reason the Green Mode tint is: they are tuning knobs, not settings a
-/// player is meant to reach for mid-match.</para>
-/// <para>Everything here runs on the main thread and nothing locks: the countdown is spent in
-/// <see cref="Tick"/> out of PlayerHealth.Update, read in ArchipelagoOverlay's OnGUI, and added
-/// to from a <see cref="MainThreadActions"/> action - the received item itself arrives on the
-/// Archipelago client's websocket thread and is queued there, the same way every other item is.
-/// </para>
+/// <para>Two things drive this and they differ only in the interval they pass to
+/// <see cref="Advance"/>: <see cref="MetronomeTrap"/> passes the fixed
+/// <see cref="ArchipelagoMenu.MetronomeTickSeconds"/>, and <see cref="MadeInHeaven"/> passes an
+/// interval that shortens as its countdown runs. Neither owns the phase, so neither can drift
+/// from the other's idea of the rhythm, and there is only one place the swing is implemented.</para>
+/// <para>They never overlap, which is what makes a single shared phase correct rather than
+/// merely convenient: a Made in Heaven cancels any trap already running, and a trap that arrives
+/// during one is queued until it ends. See <see cref="MetronomeTrap.Receive"/>.</para>
+/// <para>The beat is a LEAN and nothing else. It used to print "tick", "and", "tock", "and" to
+/// the kill feed as it went; those words survive only as the names of the four phases below,
+/// because at the speeds a Made in Heaven reaches near its end the feed would be unreadable.</para>
 /// </remarks>
-internal static class MetronomeTrap
+internal static class MetronomeBeat
 {
-    /// <summary>The beat, in the order it is printed, repeating.</summary>
-    private static readonly string[] TickWords = { "tick", "and", "tock", "and" };
-
     /// <summary>
-    /// Which way the trap holds the player over while each <see cref="TickWords"/> entry is the
-    /// last one printed - so the lean swings left on "tick", comes back up on the "and", swings
-    /// right on "tock", and comes back up again. Same length and same order as TickWords, which
-    /// is what lets one index carry both.
+    /// The four phases, in order, repeating: "tick" swings left, "and" comes back up, "tock"
+    /// swings right, "and" comes back up.
     /// </summary>
-    private static readonly MetronomeBeatLean[] TickLeans =
+    private static readonly MetronomeBeatLean[] BeatLeans =
     {
         MetronomeBeatLean.Left,
         MetronomeBeatLean.None,
@@ -68,71 +71,144 @@ internal static class MetronomeTrap
     };
 
     /// <summary>
-    /// Floor on the configured beat interval, so a hand-edited .cfg cannot make the
-    /// catch-up loop in <see cref="Tick"/> run away. The config's own
-    /// AcceptableValueRange already refuses anything smaller; this is the second belt.
+    /// Floor on the interval a driver may ask for, so a hand-edited .cfg cannot make the catch-up
+    /// loop in <see cref="Advance"/> run away. Every config entry that feeds this has an
+    /// AcceptableValueRange that already refuses anything smaller; this is the second belt.
     /// </summary>
-    private const float MinimumTickSeconds = 0.05f;
+    public const float MinimumInterval = 0.05f;
 
+    /// <summary>Which phase the next beat moves to.</summary>
+    private static int beatIndex;
+
+    /// <summary>Time spent since the last beat, in the driving countdown's own time.</summary>
+    private static float sinceLastBeat;
+
+    private static MetronomeBeatLean currentLean = MetronomeBeatLean.None;
+
+    /// <summary><see cref="Time.frameCount"/> of the last frame <see cref="Advance"/> ran on.</summary>
+    private static int lastBeatFrame = -1;
+
+    /// <summary>
+    /// Whether a driver currently owns the player's lean, and which way it is holding them.
+    /// </summary>
+    /// <remarks>
+    /// Read together, and only by <see cref="FirstPersonControllerLeanPenaltyPatch"/>: while
+    /// <see cref="Running"/> is true the player's own lean input is thrown away and
+    /// <see cref="CurrentLean"/> is what they do instead. Note this stays true while a countdown
+    /// is merely HELD - dead, between rounds - so the player keeps the pose the last beat put them
+    /// in rather than straightening up out of step with the rhythm.
+    /// </remarks>
+    public static bool Running { get; private set; }
+
+    /// <inheritdoc cref="Running"/>
+    public static MetronomeBeatLean CurrentLean => currentLean;
+
+    /// <summary>
+    /// Whether the beat is actually moving THIS frame, which is what
+    /// <see cref="MetronomeMovement.Active"/> switches the leaning modifiers on.
+    /// </summary>
+    /// <remarks>
+    /// Not the same question as <see cref="Running"/>: a countdown held because the player is dead
+    /// or between rounds is still holding their pose but is not spending time, and the modifiers
+    /// should let go for exactly as long as its clock does.
+    ///
+    /// The previous frame counts too, because Unity does not order Update between components -
+    /// FirstPersonController.Update may run before PlayerHealth.Update (the trap's driver) or
+    /// before ArchipelagoOverlay.Update (Made in Heaven's), and a one-frame window is what stops
+    /// that ordering deciding whether the modifiers are on.
+    /// </remarks>
+    public static bool IsBeating => Running && Time.frameCount - lastBeatFrame <= 1;
+
+    /// <summary>Takes the lean, from upright and at the top of the rhythm.</summary>
+    public static void Start()
+    {
+        Running = true;
+        beatIndex = 0;
+        sinceLastBeat = 0f;
+
+        // Upright to begin with: nothing has been beaten yet, so the first swing lands one full
+        // interval in rather than the moment the countdown starts.
+        currentLean = MetronomeBeatLean.None;
+        lastBeatFrame = -1;
+    }
+
+    /// <summary>Gives the lean back, standing the player up.</summary>
+    public static void Stop()
+    {
+        Running = false;
+        beatIndex = 0;
+        sinceLastBeat = 0f;
+        currentLean = MetronomeBeatLean.None;
+        lastBeatFrame = -1;
+    }
+
+    /// <summary>
+    /// Spends <paramref name="delta"/> of a driving countdown against the rhythm, swinging the
+    /// player as each beat lands.
+    /// </summary>
+    /// <param name="delta">Time the driver actually spent this frame - not Time.deltaTime, which
+    /// would keep the beat moving on frames the countdown itself was held.</param>
+    /// <param name="intervalSeconds">How long this beat lasts. Re-read every call rather than
+    /// stored, which is what lets Made in Heaven shorten it as it goes.</param>
+    public static void Advance(float delta, float intervalSeconds)
+    {
+        if (!Running) return;
+
+        sinceLastBeat += delta;
+        lastBeatFrame = Time.frameCount;
+
+        float interval = Mathf.Max(MinimumInterval, intervalSeconds);
+
+        // A loop, not a single test: one long frame - a hitch, or the scene load at the start of a
+        // round - can cover more than one beat, and the rhythm should not lose its place over it.
+        // Subtracting the interval rather than zeroing keeps the beat on its own clock instead of
+        // drifting a little later every frame. If several beats land in one frame the last one
+        // wins, which is the phase the player would be in had every frame been short.
+        while (sinceLastBeat >= interval)
+        {
+            sinceLastBeat -= interval;
+            currentLean = BeatLeans[beatIndex];
+
+            // Wrapped here rather than indexed with a modulo, so the counter cannot run away over
+            // a long session and is always a legal index on its own.
+            beatIndex = (beatIndex + 1) % BeatLeans.Length;
+        }
+    }
+}
+
+/// <summary>
+/// The room's Metronome trap: a countdown in the corner of the screen that swings the player
+/// left and right on <see cref="MetronomeBeat"/>'s rhythm until it runs out.
+/// </summary>
+/// <remarks>
+/// <para>How long a Metronome runs and how fast it beats are both config entries -
+/// <see cref="ArchipelagoMenu.MetronomeTrapSeconds"/> and
+/// <see cref="ArchipelagoMenu.MetronomeTickSeconds"/> - rather than numbers the apworld sends,
+/// because neither is part of the two repos' slot-data contract. Both are hidden from the Mod
+/// Menu page for the same reason the Green Mode tint is: they are tuning knobs, not settings a
+/// player is meant to reach for mid-match.</para>
+/// <para>The beat is a LEAN, not a line in the kill feed: the trap takes the player's leaning off
+/// them and swings it left, upright, right, upright in time with itself, and their own lean keys
+/// do nothing until it winds down. Only the start, extension and wound-down lines are written.
+/// See <see cref="MetronomeBeat"/>, which is the rhythm, and
+/// <see cref="FirstPersonControllerLeanPenaltyPatch"/>, which applies it.</para>
+/// <para>Everything here runs on the main thread and nothing locks: the countdown is spent in
+/// <see cref="Tick"/> out of PlayerHealth.Update, read in ArchipelagoOverlay's OnGUI, and added
+/// to from a <see cref="MainThreadActions"/> action - the received item itself arrives on the
+/// Archipelago client's websocket thread and is queued there, the same way every other item is.
+/// </para>
+/// </remarks>
+internal static class MetronomeTrap
+{
     /// <summary>The tag every line this trap writes is filed under in LogOutput.log.</summary>
     private const string FeedTag = "Metronome";
 
     private static float secondsRemaining;
 
-    /// <summary>Time spent since the last beat was printed, in the countdown's own time.</summary>
-    private static float sinceLastTick;
-
-    /// <summary>Which word of <see cref="TickWords"/> the next beat prints.</summary>
-    private static int tickIndex;
-
-    /// <summary>
-    /// Which way the trap is currently holding the player over. <see cref="MetronomeBeatLean.None"/>
-    /// until the first word is printed, which is why a countdown opens upright rather than
-    /// already leaning.
-    /// </summary>
-    private static MetronomeBeatLean beatLean = MetronomeBeatLean.None;
-
-    /// <summary>
-    /// <see cref="Time.frameCount"/> of the last frame <see cref="Tick"/> actually spent time on.
-    /// </summary>
-    private static int lastCountedFrame = -1;
-
     /// <summary>
     /// What the overlay draws. Zero means no countdown is running and nothing is drawn.
     /// </summary>
     public static float SecondsRemaining => secondsRemaining;
-
-    /// <summary>
-    /// Whether the trap is holding the player's lean, and which way.
-    /// </summary>
-    /// <remarks>
-    /// Read together, and only by <see cref="FirstPersonControllerLeanPenaltyPatch"/>: while
-    /// <see cref="ForcingLean"/> is true the player's own lean input is thrown away and
-    /// <see cref="CurrentBeatLean"/> is what they do instead.
-    /// </remarks>
-    public static bool ForcingLean => secondsRemaining > 0f;
-
-    /// <inheritdoc cref="ForcingLean"/>
-    public static MetronomeBeatLean CurrentBeatLean => beatLean;
-
-    /// <summary>
-    /// Whether the countdown is running down THIS frame, which is what the movement patches
-    /// below switch on.
-    /// </summary>
-    /// <remarks>
-    /// <para>Not simply <c>SecondsRemaining &gt; 0</c>: a countdown that is held because the
-    /// player is dead or between rounds is not counting, and the trap's grip on their movement
-    /// should let go for exactly as long as its clock does. So this answers the question
-    /// <see cref="Tick"/> already decides every frame, rather than asking it a second way and
-    /// risking the two disagreeing.</para>
-    /// <para>The previous frame counts too, because Unity does not order Update between two
-    /// components: FirstPersonController.Update may well run before PlayerHealth.Update in the
-    /// same frame, and a one-frame window is what stops that ordering deciding whether the
-    /// patches are on. It also means the effect ends up at most one frame late, which is a
-    /// sixtieth of a second nobody can see.</para>
-    /// </remarks>
-    public static bool IsCountingDown =>
-        secondsRemaining > 0f && Time.frameCount - lastCountedFrame <= 1;
 
     /// <summary>How much held trap is waiting for a Made in Heaven to finish. See <see cref="Receive"/>.</summary>
     private static int pendingSeconds;
@@ -170,7 +246,7 @@ internal static class MetronomeTrap
             return;
         }
 
-        if (MadeInHeavenBuff.Running)
+        if (MadeInHeaven.Running)
         {
             pendingSeconds += seconds;
 
@@ -190,7 +266,7 @@ internal static class MetronomeTrap
 
     /// <summary>
     /// Starts whatever was held back while a Made in Heaven ran. Called by
-    /// <see cref="MadeInHeavenBuff"/> as its countdown ends.
+    /// <see cref="MadeInHeaven"/> as its countdown ends.
     /// </summary>
     public static void ReleaseHeld()
     {
@@ -227,13 +303,7 @@ internal static class MetronomeTrap
         }
 
         secondsRemaining = seconds;
-
-        // The beat starts from silence, so the first word lands one full interval in rather than
-        // on top of the start line - and the player starts that interval upright, since nothing
-        // has been counted yet to hold them over.
-        sinceLastTick = 0f;
-        tickIndex = 0;
-        beatLean = MetronomeBeatLean.None;
+        MetronomeBeat.Start();
 
         KillFeed.Write(FeedTag, $"Metronome{from} started - {seconds} seconds of tick tock");
     }
@@ -243,7 +313,7 @@ internal static class MetronomeTrap
     /// </summary>
     /// <remarks>
     /// A Made in Heaven overrules a Metronome, so this exists for
-    /// <see cref="MadeInHeavenBuff"/> to call on every client as one activates. It is the same
+    /// <see cref="MadeInHeaven"/> to call on every client as one activates. It is the same
     /// reset the countdown does when it runs out, minus the "wound down" line - the trap did not
     /// wind down, it was taken away, and the caller says so in its own words.
     /// </remarks>
@@ -253,13 +323,10 @@ internal static class MetronomeTrap
         if (secondsRemaining <= 0f) return false;
 
         secondsRemaining = 0f;
-        sinceLastTick = 0f;
-        tickIndex = 0;
 
-        // Both of these matter beyond tidiness: ForcingLean reads secondsRemaining and the lean
-        // patch reads beatLean, so between them this is what lets go of the player's lean.
-        beatLean = MetronomeBeatLean.None;
-        lastCountedFrame = -1;
+        // Not merely tidiness: this is what lets go of the player's lean, so a Made in Heaven that
+        // cancels a trap and then starts its own beat gets a clean phase rather than the trap's.
+        MetronomeBeat.Stop();
         return true;
     }
 
@@ -294,47 +361,21 @@ internal static class MetronomeTrap
 
         if (!playerHealth.controller.canMove && !StunWatch.IsStunned(playerHealth.controller)) return;
 
-        // The gate is passed, so this frame is one the countdown is genuinely running in. Recorded
-        // before the time is spent, so IsCountingDown reads true for the whole of the frame that
-        // spends the last of the countdown rather than going false halfway through it.
-        lastCountedFrame = Time.frameCount;
-
         float delta = Time.deltaTime;
         secondsRemaining -= delta;
-        sinceLastTick += delta;
 
-        float tickSeconds = Mathf.Max(MinimumTickSeconds, ArchipelagoMenu.MetronomeTickSeconds.Value);
-
-        // A loop, not a single test: one long frame - a hitch, or the scene load at the start of a
-        // round - can cover more than one beat, and the metronome should not lose its place over it.
-        // Subtracting the interval rather than zeroing keeps the beat on its own clock instead of
-        // drifting a little later every frame.
-        while (sinceLastTick >= tickSeconds && secondsRemaining > 0f)
-        {
-            sinceLastTick -= tickSeconds;
-            KillFeed.Write(FeedTag, TickWords[tickIndex]);
-
-            // The word and the lean are the same beat, so they are set from the same index in
-            // the same step - the player swings over as the word lands, and holds there until
-            // the next one. If a long frame covers several beats the last one wins, which is the
-            // beat they would be on had every frame been short.
-            beatLean = TickLeans[tickIndex];
-
-            // Wrapped here rather than indexed with a modulo, so the counter cannot run away
-            // over a long session and is always a legal index on its own.
-            tickIndex = (tickIndex + 1) % TickWords.Length;
-        }
+        // The same delta the countdown just spent, not Time.deltaTime read again: on a frame the
+        // gate above had refused, the countdown would not have moved and neither should the beat.
+        // A fixed interval, unlike Made in Heaven's, which shortens as it goes.
+        MetronomeBeat.Advance(delta, ArchipelagoMenu.MetronomeTickSeconds.Value);
 
         if (secondsRemaining > 0f) return;
 
         secondsRemaining = 0f;
-        sinceLastTick = 0f;
-        tickIndex = 0;
 
-        // Upright again, and ForcingLean goes false on the same line that zeroes the countdown,
-        // so the player has their own lean back from this frame on.
-        beatLean = MetronomeBeatLean.None;
-        lastCountedFrame = -1;
+        // Upright again, and Running goes false with it, so the player has their own lean back
+        // from this frame on.
+        MetronomeBeat.Stop();
         KillFeed.Write(FeedTag, "Metronome wound down");
     }
 }
@@ -344,12 +385,16 @@ internal static class MetronomeTrap
 /// <see cref="PlayerHealthBuff"/>, and the one <c>buff_type</c> defaults to.
 /// </summary>
 /// <remarks>
-/// <para>PARTIAL. What works: the announcement on the activating player's screen, the
-/// announcement on everybody else's, cancelling any Metronome trap the activation lands on top
-/// of, and a countdown that every machine in the lobby runs together and every machine can see.
-/// What is NOT here yet is the effect itself - the accelerating metronome that is supposed to
-/// beat for everyone except the activating player, its start/end speed config entries, and the
-/// interpolation between them. The countdown is the clock that will drive it.</para>
+/// <para>Time speeding up, which is where the name comes from. It starts a metronome on every
+/// machine in the lobby EXCEPT the activating player's, slowly at first and accelerating from
+/// there, and the countdown every machine can see in the corner is the clock that drives it: the
+/// beat interval is interpolated from <see cref="ArchipelagoMenu.MadeInHeavenStartTickSeconds"/>
+/// to <see cref="ArchipelagoMenu.MadeInHeavenEndTickSeconds"/> across how far through the
+/// countdown it is. See <see cref="CurrentInterval"/>.</para>
+/// <para>The player it spares is the one the multiworld gave it to, which is what makes it a buff
+/// rather than a trap: everyone they are fighting is thrown left and right harder and harder while
+/// they are left alone. The beat itself is <see cref="MetronomeBeat"/>'s, the same rhythm the
+/// Metronome trap swings on, driven at a different interval.</para>
 /// <para>The lobby-wide half goes over Mycelium, through <see cref="MadeInHeavenNet"/>. It has
 /// to: nobody else in the match is running an Archipelago client, so the only way their game
 /// hears about this is the same P2P channel <see cref="RouletteNet"/> uses for the weapon pool.
@@ -376,7 +421,7 @@ internal static class MetronomeTrap
 /// <see cref="Receive"/> through <see cref="MainThreadActions"/> rather than calling it on the
 /// websocket thread, and the RPC arrives on Mycelium's own main-thread pump.</para>
 /// </remarks>
-internal static class MadeInHeavenBuff
+internal static class MadeInHeaven
 {
     /// <summary>The tag every line this buff writes is filed under in LogOutput.log.</summary>
     private const string FeedTag = "MadeInHeaven";
@@ -393,6 +438,29 @@ internal static class MadeInHeavenBuff
     private static float secondsRemaining;
 
     /// <summary>
+    /// How long this Made in Heaven was started for. The denominator of the ramp - see
+    /// <see cref="CurrentInterval"/> - so it has to survive for the whole countdown.
+    /// </summary>
+    private static float totalSeconds;
+
+    /// <summary>The interval the beat opens on, and the one it accelerates toward.</summary>
+    private static float startTickSeconds;
+
+    /// <inheritdoc cref="startTickSeconds"/>
+    private static float endTickSeconds;
+
+    /// <summary>
+    /// Whether the multiworld handed this one to the player sitting at THIS machine.
+    /// </summary>
+    /// <remarks>
+    /// The whole of "everyone except the activating player". It is the buff's owner who is spared
+    /// the metronome - they get the announcement and the countdown to watch, and nothing else -
+    /// while every other machine in the lobby beats. Set true only in <see cref="Receive"/>, which
+    /// is the one path the Archipelago client can reach.
+    /// </remarks>
+    private static bool isActivator;
+
+    /// <summary>
     /// Last frame's <c>PauseManager.BetweenRounds</c>, so <see cref="Tick"/> can see the moment a
     /// round ends rather than only that one has. That edge is the resync point.
     /// </summary>
@@ -406,6 +474,34 @@ internal static class MadeInHeavenBuff
 
     /// <summary>Whether a Made in Heaven is running at all, held between rounds included.</summary>
     public static bool Running => secondsRemaining > 0f;
+
+    /// <summary>
+    /// How long the current beat should be held, given how far through the countdown it is.
+    /// </summary>
+    /// <remarks>
+    /// <para>The acceleration, and the whole of it. Progress runs 0 at the start to 1 at the end,
+    /// and the interval is lerped from <see cref="startTickSeconds"/> to
+    /// <see cref="endTickSeconds"/> across it - so the swing gets faster and faster as the
+    /// countdown runs out. Read fresh on every beat rather than stored, which is what makes it a
+    /// ramp rather than a fixed rate chosen at activation.</para>
+    /// <para>Time speeding up is where the name comes from, and the apworld's own BuffType
+    /// docstring describes it the same way: "starts the metronome slow and speeds it up from
+    /// there".</para>
+    /// </remarks>
+    private static float CurrentInterval
+    {
+        get
+        {
+            // A resync from a host running an older build, or an activation that somehow carried
+            // no length. Falls back to the opening interval rather than dividing by zero.
+            if (totalSeconds <= 0f) return startTickSeconds;
+
+            // Clamped because secondsRemaining can sit a hair above totalSeconds on the frame it
+            // starts, and a hair below zero on the frame it ends.
+            float progress = Mathf.Clamp01(1f - secondsRemaining / totalSeconds);
+            return Mathf.Lerp(startTickSeconds, endTickSeconds, progress);
+        }
+    }
 
     /// <summary>
     /// Takes delivery of one Made in Heaven from the room. Runs only on the machine the
@@ -429,17 +525,28 @@ internal static class MadeInHeavenBuff
             return;
         }
 
+        float startTick = ArchipelagoMenu.MadeInHeavenStartTickSeconds.Value;
+        float endTick = ArchipelagoMenu.MadeInHeavenEndTickSeconds.Value;
+
         string from = string.IsNullOrWhiteSpace(sender) ? "" : $" from {sender}";
-        Plugin.BepinLogger.LogInfo($"[{FeedTag}] activating a Made in Heaven{from} for {seconds}s");
+        Plugin.BepinLogger.LogInfo(
+            $"[{FeedTag}] activating a Made in Heaven{from} for {seconds}s, beat {startTick}s -> {endTick}s");
+
+        // The one place this is ever set. Whoever the multiworld gave the buff to is the one
+        // player it does not beat, and Receive is the only path the Archipelago client reaches.
+        isActivator = true;
 
         // The activating player's own line, and their own copy of the countdown, applied here
-        // rather than waiting for the broadcast to come back around. Mycelium may or may not
-        // deliver a broadcast to the sender, and MadeInHeavenNet ignores our own message either
-        // way, so this is the one and only place the local half happens.
+        // rather than waiting for the broadcast to come back around. Mycelium delivers a
+        // broadcast to its sender as well, and MadeInHeavenNet drops our own copy, so this is
+        // the one and only place the local half happens.
         KillFeed.Write(FeedTag, ActivationCry);
-        Begin(seconds);
+        Begin(seconds, startTick, endTick);
 
-        MadeInHeavenNet.Announce(KillFeed.LocalPlayerName, seconds);
+        // The two intervals travel with the length for the same reason it does: the beat takes
+        // hold of people's leaning, so the lobby has to be swinging to one rhythm rather than to
+        // whatever each machine has in its own .cfg.
+        MadeInHeavenNet.Announce(KillFeed.LocalPlayerName, seconds, startTick, endTick);
     }
 
     /// <summary>
@@ -448,7 +555,9 @@ internal static class MadeInHeavenBuff
     /// </summary>
     /// <param name="playerName">Whoever set it off, as the lobby knows them.</param>
     /// <param name="seconds">The length they activated it for, so every machine counts the same.</param>
-    public static void ReceiveRemote(string playerName, int seconds)
+    /// <param name="startTick">Their beat interval at the start, so the lobby swings in unison.</param>
+    /// <param name="endTick">Their beat interval at the end, likewise.</param>
+    public static void ReceiveRemote(string playerName, int seconds, float startTick, float endTick)
     {
         if (seconds < 1)
         {
@@ -460,8 +569,11 @@ internal static class MadeInHeavenBuff
 
         string who = string.IsNullOrWhiteSpace(playerName) ? UnknownActivator : playerName;
 
+        // Somebody else's buff, so this machine is one of the ones it beats.
+        isActivator = false;
+
         KillFeed.Write(FeedTag, string.Format(RemoteActivationFormat, who));
-        Begin(seconds);
+        Begin(seconds, startTick, endTick);
     }
 
     /// <summary>
@@ -478,7 +590,7 @@ internal static class MadeInHeavenBuff
     /// case is worth a line, because a timer appearing in the corner with no explanation is
     /// worse than an odd one.</para>
     /// </remarks>
-    public static void AdoptRemaining(float seconds)
+    public static void AdoptRemaining(float seconds, float total, float startTick, float endTick)
     {
         // The host only sends this while its own is running, so a zero here would be a message
         // that outlived what it describes. Nothing to sync to.
@@ -486,10 +598,21 @@ internal static class MadeInHeavenBuff
 
         bool wasRunning = Running;
         float before = secondsRemaining;
+
         secondsRemaining = seconds;
+
+        // The ramp comes with it. A client correcting its clock but keeping its own idea of the
+        // total would end up somewhere else on the curve than everyone it is syncing with, and a
+        // client repairing from nothing has no total at all to interpolate against.
+        totalSeconds = total;
+        startTickSeconds = startTick;
+        endTickSeconds = endTick;
 
         if (wasRunning)
         {
+            // isActivator is deliberately left alone here. It is the host's CLOCK that is
+            // authoritative, not its idea of who owns the buff - overwriting it would turn the
+            // activating player into one of the beaten the first time a round ended.
             Plugin.BepinLogger.LogDebug(
                 $"[{FeedTag}] resynced to the host: {before:0.00}s -> {seconds:0.00}s");
             return;
@@ -499,31 +622,53 @@ internal static class MadeInHeavenBuff
             $"[{FeedTag}] the host reports a Made in Heaven with {seconds:0.00}s left that this " +
             "machine knew nothing about; adopting it");
 
+        // Nothing was running, so this machine cannot be the one that activated it - an activator
+        // would have gone through Receive. It is one of the beaten, and starts beating now.
+        isActivator = false;
+
         if (MetronomeTrap.Cancel())
         {
             KillFeed.Write(FeedTag, "The metronome stops.");
         }
 
+        MetronomeBeat.Start();
         KillFeed.Write(FeedTag, "Made in Heaven is already under way.");
     }
 
     /// <summary>
-    /// The half every machine does the same way, wherever the activation came from: throw out
-    /// any Metronome trap it lands on, and start the countdown over.
+    /// The half every machine does the same way, wherever the activation came from: throw out any
+    /// Metronome trap it lands on, start the countdown over, and take up the beat unless this is
+    /// the activating player's machine.
     /// </summary>
-    private static void Begin(int seconds)
+    private static void Begin(int seconds, float startTick, float endTick)
     {
         // A Made in Heaven outranks a Metronome, so the trap goes - including the lean it was
         // holding the player in, which Cancel releases. Reported only when there was actually
-        // one running, so a quiet activation stays quiet.
+        // one running, so a quiet activation stays quiet. Note this is the trap the buff lands ON
+        // TOP of; one that arrives DURING it is queued instead - see MetronomeTrap.Receive.
         if (MetronomeTrap.Cancel())
         {
             KillFeed.Write(FeedTag, "The metronome stops.");
         }
 
         // Assignment, not addition: a second Made in Heaven replaces the first outright rather
-        // than extending it the way a second Metronome extends its trap.
+        // than extending it the way a second Metronome extends its trap. The ramp is replaced
+        // wholesale with it, so the new one runs its own curve from the top.
         secondsRemaining = seconds;
+        totalSeconds = seconds;
+        startTickSeconds = startTick;
+        endTickSeconds = endTick;
+
+        // "Everyone except the activating player", in one line. Started rather than left alone
+        // even if a beat was already going, so a second Made in Heaven restarts the rhythm from
+        // upright along with the clock.
+        if (isActivator)
+        {
+            MetronomeBeat.Stop();
+            return;
+        }
+
+        MetronomeBeat.Start();
     }
 
     /// <summary>
@@ -561,17 +706,35 @@ internal static class MadeInHeavenBuff
         // spent while it is open, so a correction cannot land in the middle of anything.
         if (roundJustEnded && MyceliumNetwork.IsHost)
         {
-            MadeInHeavenNet.Resync(secondsRemaining);
+            MadeInHeavenNet.Resync(secondsRemaining, totalSeconds, startTickSeconds, endTickSeconds);
         }
 
         if (betweenRounds) return;
 
-        secondsRemaining -= Time.deltaTime;
+        float delta = Time.deltaTime;
+        secondsRemaining -= delta;
+
+        // The beat, on the interval this moment in the countdown calls for - which is what makes
+        // it accelerate. Skipped entirely on the activating player's machine, where no beat was
+        // ever started; MetronomeBeat.Advance would refuse anyway, but not asking says why.
+        //
+        // The same delta the countdown just spent, so a frame held between rounds holds the beat
+        // with it and the rhythm cannot run on while the clock is stopped.
+        if (!isActivator)
+        {
+            MetronomeBeat.Advance(delta, CurrentInterval);
+        }
 
         if (secondsRemaining > 0f) return;
 
         secondsRemaining = 0f;
-        KillFeed.Write(FeedTag, "Made in Heaven has run its course.");
+
+        // Upright again, and the player has their own lean back from this frame on. Cleared
+        // before ReleaseHeld so a queued trap starting on this same frame gets a clean rhythm.
+        MetronomeBeat.Stop();
+        isActivator = false;
+
+        KillFeed.Write(FeedTag, "The Heaven plan has completed.");
 
         // Zeroed BEFORE this call, because ReleaseHeld starts a trap that reads Running to
         // decide whether to hold itself back again - and it would, forever, if this still
@@ -613,7 +776,7 @@ internal class MadeInHeavenNet
     /// Broadcasts an activation to the lobby. Called on the machine the multiworld gave the buff
     /// to, straight after it has applied its own half.
     /// </summary>
-    public static void Announce(string playerName, int seconds)
+    public static void Announce(string playerName, int seconds, float startTick, float endTick)
     {
         if (instance == null)
         {
@@ -632,16 +795,17 @@ internal class MadeInHeavenNet
         }
 
         MyceliumNetwork.RPC(RouletteNet.ModId, nameof(ClientMadeInHeavenActivated),
-            ReliableType.Reliable, playerName, seconds);
+            ReliableType.Reliable, playerName, seconds, startTick, endTick);
     }
 
     /// <summary>
     /// Runs on every machine in the lobby. The sender's own copy is dropped, because
-    /// <see cref="MadeInHeavenBuff.Receive"/> has already done its half with the line that
+    /// <see cref="MadeInHeaven.Receive"/> has already done its half with the line that
     /// belongs to whoever set it off.
     /// </summary>
     [CustomRPC]
-    public void ClientMadeInHeavenActivated(string playerName, int seconds, RPCInfo info)
+    public void ClientMadeInHeavenActivated(string playerName, int seconds, float startTick,
+        float endTick, RPCInfo info)
     {
         try
         {
@@ -653,9 +817,10 @@ internal class MadeInHeavenNet
             if (info.SenderSteamID == SteamUser.GetSteamID()) return;
 
             Plugin.BepinLogger.LogInfo(
-                $"[MadeInHeaven] {playerName} ({info.SenderSteamID}) activated one for {seconds}s");
+                $"[MadeInHeaven] {playerName} ({info.SenderSteamID}) activated one for {seconds}s, " +
+                $"beat {startTick}s -> {endTick}s");
 
-            MadeInHeavenBuff.ReceiveRemote(playerName, seconds);
+            MadeInHeaven.ReceiveRemote(playerName, seconds, startTick, endTick);
         }
         catch (Exception error)
         {
@@ -668,25 +833,31 @@ internal class MadeInHeavenNet
 
     /// <summary>
     /// Broadcasts how much of a running Made in Heaven is left. Sent by the host only, as a
-    /// round ends - see <see cref="MadeInHeavenBuff.Tick"/> for why that moment.
+    /// round ends - see <see cref="MadeInHeaven.Tick"/> for why that moment.
     /// </summary>
     /// <remarks>
-    /// A float, sent as one: Mycelium serializes System.Single natively, so there is no reason to
-    /// round the remainder to whole seconds and re-introduce error while correcting for it.
+    /// <para>Floats, sent as floats: Mycelium serializes System.Single natively, so there is no
+    /// reason to round the remainder to whole seconds and re-introduce error while correcting for
+    /// it.</para>
+    /// <para>The whole shape of the countdown goes, not just what is left of it. A client
+    /// correcting its clock while keeping its own idea of the total would sit at a different point
+    /// on the acceleration ramp than the machines it is syncing with, and one repairing from
+    /// nothing has no total to interpolate against at all.</para>
     /// </remarks>
-    public static void Resync(float secondsRemaining)
+    public static void Resync(float secondsRemaining, float totalSeconds, float startTick, float endTick)
     {
         if (instance == null || !MyceliumNetwork.InLobby) return;
 
         MyceliumNetwork.RPC(RouletteNet.ModId, nameof(ClientMadeInHeavenResync),
-            ReliableType.Reliable, secondsRemaining);
+            ReliableType.Reliable, secondsRemaining, totalSeconds, startTick, endTick);
     }
 
     /// <summary>
     /// Runs on every machine in the lobby. Takes the host's remaining time as the truth.
     /// </summary>
     [CustomRPC]
-    public void ClientMadeInHeavenResync(float secondsRemaining, RPCInfo info)
+    public void ClientMadeInHeavenResync(float secondsRemaining, float totalSeconds,
+        float startTick, float endTick, RPCInfo info)
     {
         try
         {
@@ -705,7 +876,7 @@ internal class MadeInHeavenNet
                 return;
             }
 
-            MadeInHeavenBuff.AdoptRemaining(secondsRemaining);
+            MadeInHeaven.AdoptRemaining(secondsRemaining, totalSeconds, startTick, endTick);
         }
         catch (Exception error)
         {
@@ -904,10 +1075,13 @@ internal static class MetronomeMovement
     /// Whether the leaning modifiers are off right now.
     /// </summary>
     /// <remarks>
-    /// The metronome answer is <see cref="MetronomeTrap.IsCountingDown"/> rather than "a
-    /// countdown exists", so the effect is on for exactly as long as the clock is moving - a
-    /// countdown held because the player is dead or between rounds hands the game back to
-    /// vanilla until they are playing again.
+    /// <para>The metronome answer is <see cref="MetronomeBeat.IsBeating"/> rather than "a
+    /// countdown exists", so the effect is on for exactly as long as the beat is moving - one held
+    /// because the player is dead or between rounds hands the game back to vanilla until they are
+    /// playing again.</para>
+    /// <para>The BEAT, not either countdown, so this covers a Made in Heaven as well as a
+    /// Metronome trap - and answers false for the player who activated the Made in Heaven, who has
+    /// no beat of their own and so keeps vanilla leaning along with vanilla's penalties.</para>
     /// </remarks>
     public static bool Active
     {
@@ -925,7 +1099,7 @@ internal static class MetronomeMovement
                 // be holding - BepInEx parses the enum out of the .cfg and falls back to the
                 // default itself, so a fourth value never reaches this.
                 default:
-                    return MetronomeTrap.IsCountingDown;
+                    return MetronomeBeat.IsBeating;
             }
         }
     }
@@ -962,19 +1136,19 @@ internal static class MetronomeMovement
 /// two postfixes it would be a coin toss: Harmony does not order postfixes on the same method
 /// against each other, so the derivation could run against the input lean rather than the
 /// beat.</para>
-/// <para>Overwriting the pair is also the whole of "the player cannot lean by hand during the
-/// trap". Vanilla's lean input has already been read and turned into those two booleans by the
-/// time this runs, so replacing them discards it; nothing else carries it forward, and the toggle
-/// latches behind it only ever feed the same two booleans.</para>
-/// <para>The forced lean is gated on <see cref="MetronomeTrap.ForcingLean"/>, NOT on
+/// <para>Overwriting the pair is also the whole of "the player cannot lean by hand while a
+/// metronome has them". Vanilla's lean input has already been read and turned into those two
+/// booleans by the time this runs, so replacing them discards it; nothing else carries it forward,
+/// and the toggle latches behind it only ever feed the same two booleans.</para>
+/// <para>The forced lean is gated on <see cref="MetronomeBeat.Running"/>, NOT on
 /// <see cref="MetronomeMovement.Active"/>: the dropdown decides whether leaning costs the player
-/// anything, and the trap decides whether they are leaning. They are independent, so a player
-/// who set the dropdown to Never gets swung about AND pays vanilla's full price for it, which is
-/// the harsher trap and the honest reading of the setting.</para>
-/// <para>ForcingLean rather than <see cref="MetronomeTrap.IsCountingDown"/>, which is what the
-/// movement half reads: a countdown held because the player is dead or between rounds has its
-/// beat frozen too, and letting them straighten up in the meantime would put the lean out of step
-/// with the word last printed.</para>
+/// anything, and the beat decides whether they are leaning. They are independent, so a player who
+/// set the dropdown to Never gets swung about AND pays vanilla's full price for it, which is the
+/// harsher trap and the honest reading of the setting.</para>
+/// <para>Running rather than <see cref="MetronomeBeat.IsBeating"/>, which is what the movement
+/// half reads: a countdown held because the player is dead or between rounds has its beat frozen
+/// too, and letting them straighten up in the meantime would put the lean out of step with the
+/// phase it stopped on.</para>
 /// <para>The postfix restores isLeaning the same way vanilla's own last statement does, rather
 /// than putting back what the prefix saved. That is not belt and braces: vanilla's Update has an
 /// early return at IL_0816, taken when the player cannot move - frozen between rounds, stunned,
@@ -1024,11 +1198,11 @@ public class FirstPersonControllerLeanPenaltyPatch
         {
             // Asked once and reused, so the beat cannot change between the two writes and leave
             // the player leaning both ways or neither.
-            bool forcing = MetronomeTrap.ForcingLean && __instance != null && __instance.IsOwner;
+            bool forcing = MetronomeBeat.Running && __instance != null && __instance.IsOwner;
 
             if (forcing)
             {
-                MetronomeBeatLean beat = MetronomeTrap.CurrentBeatLean;
+                MetronomeBeatLean beat = MetronomeBeat.CurrentLean;
 
                 // Written unconditionally, both of them: on a None beat this is what stands the
                 // player back up, and on either of the others it is what throws away whatever
