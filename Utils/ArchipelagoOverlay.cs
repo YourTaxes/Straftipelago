@@ -46,7 +46,12 @@ internal class ArchipelagoOverlay : MonoBehaviour
     private const float MetronomePanelTopFraction = 0.02f;
     private const float PanelPaddingFraction = 0.006f;
     private const float EntryHeightFraction = 0.022f;
-    private const float EntryFontFraction = 0.016f;
+
+    /// <summary>
+    /// How opaque the countdown box's backdrop is. Lower than the other two because it is
+    /// the only panel drawn over live gameplay - see <see cref="DrawCountdowns"/>.
+    /// </summary>
+    private const float CountdownPanelAlpha = 0.75f;
 
     /// <summary>Gap between the progress box's two columns. Matches the weapon list's own.</summary>
     private const float ColumnGapFraction = 0.008f;
@@ -141,23 +146,28 @@ internal class ArchipelagoOverlay : MonoBehaviour
             Plugin.BepinLogger.LogInfo($"[Overlay] drawing, frame={Time.frameCount}");
         }
 
-        // Before the pause gate, because this one is not a paused panel: it is a trap running
-        // against the player in real time, and a countdown they could only read by pausing
-        // would be no countdown at all. It draws itself only while one is running.
+        // The Settings gate covers ALL THREE panels, countdown included: that screen is a
+        // full-width layout every one of them would sit on top of, and pause stays true the
+        // whole time it is up. See InSettingsMenu.
+        if (InSettingsMenu()) return;
+
+        // Above the pause gate but below the Settings one, because this is not a paused
+        // panel: it is a trap running against the player in real time, and a countdown they
+        // could only read by pausing would be no countdown at all. It draws itself only
+        // while one is running, and at a lower backdrop opacity than the other two, since it
+        // is the only panel that ever sits over live gameplay.
         DrawCountdowns();
 
-        // The pause gate for both panels, here rather than in each of them: they are one
-        // stacked block as far as the player is concerned, and a gate that let one through
-        // without the other would leave a stat box floating over an empty screen.
+        // The pause gate for the other two panels, here rather than in each of them: they
+        // are one stacked block as far as the player is concerned, and a gate that let one
+        // through without the other would leave a stat box floating over an empty screen.
         //
-        // Gated on pause so neither ever sits on top of gameplay, and hidden again once the
-        // player opens Settings from the pause menu: that screen is a full-width layout they
-        // would sit on top of, and pause stays true the whole time it is up. See
-        // InSettingsMenu. PauseManager.Instance is null-checked rather than assumed:
-        // HUDTween's own null-dereference of that singleton is one of the open crash
-        // candidates, so it is demonstrably not always there.
+        // PauseManager.Instance is null-checked rather than assumed: HUDTween's own
+        // null-dereference of that singleton is one of the open crash candidates, so it is
+        // demonstrably not always there. (InSettingsMenu above makes the same check and
+        // answers false when it fails, which is the harmless direction for a gate that
+        // hides things.)
         if (PauseManager.Instance == null || !PauseManager.Instance.pause) return;
-        if (InSettingsMenu()) return;
 
         // The connection UI that used to be here - the Archipelago version/status labels, the
         // host/slot/password text fields, the Connect button and the console window - is now
@@ -207,9 +217,14 @@ internal class ArchipelagoOverlay : MonoBehaviour
         float entryHeight = Screen.height * EntryHeightFraction;
         float headerHeight = entryHeight * 1.5f;
 
-        // One column, the width the weapon list gives each of its own, which is more than the
-        // two short lines here need and keeps the box the same shape as the rest of the overlay.
-        float entryWidth = Screen.width * 0.145f;
+        string timeText = $"{Mathf.CeilToInt(secondsRemaining)}s left";
+
+        // Sized to the two lines rather than to a fraction of the screen. The label is the
+        // wider of the two in every case the mod produces ("Made in Heaven" against "60s
+        // left"), so the box does not visibly breathe as the digits drop.
+        float entryWidth = Mathf.Max(
+            VanillaSkin.MeasureWidth(label, VanillaSkin.Header),
+            VanillaSkin.MeasureWidth(timeText, VanillaSkin.Entry));
         float panelWidth = entryWidth + panelPadding * 2f;
         float panelHeight = headerHeight + entryHeight + entryHeight * 0.5f;
 
@@ -218,15 +233,14 @@ internal class ArchipelagoOverlay : MonoBehaviour
         float panelTop = Screen.height * MetronomePanelTopFraction
             + slot * (panelHeight + entryHeight * 0.4f);
 
-        GUI.Box(new Rect(panelLeft, panelTop, panelWidth, panelHeight), "");
+        VanillaSkin.Box(new Rect(panelLeft, panelTop, panelWidth, panelHeight), CountdownPanelAlpha);
 
-        GUIStyle style = EntryStyle();
         float entryLeft = panelLeft + panelPadding;
 
-        GUI.Label(new Rect(entryLeft, panelTop + entryHeight * 0.25f, entryWidth, headerHeight),
-            label, style);
-        GUI.Label(new Rect(entryLeft, panelTop + headerHeight, entryWidth, entryHeight),
-            $"{Mathf.CeilToInt(secondsRemaining)}s left", style);
+        VanillaSkin.Label(new Rect(entryLeft, panelTop + entryHeight * 0.25f, entryWidth, headerHeight),
+            label, VanillaSkin.Header);
+        VanillaSkin.Label(new Rect(entryLeft, panelTop + headerHeight, entryWidth, entryHeight),
+            timeText, VanillaSkin.Entry);
     }
 
     /// <summary>
@@ -296,47 +310,70 @@ internal class ArchipelagoOverlay : MonoBehaviour
 
         List<string> deathLinkLines = DeathLinkLines(showGoals);
 
-        // Packed to the width the longest line needs, with room for the tick that a met goal
-        // adds to the end of it, and capped so both columns together still fit the same
-        // left-half budget the weapon list keeps to - neither may cover the pause menu.
+        // The tick a met goal earns is folded in here rather than at draw time, because the
+        // column below is measured against these strings and a tick added afterwards would be
+        // a character the box was never sized for. U+2713, the same mark the weapon list puts
+        // after a weapon that has earned its check.
+        var progressLines = new List<string>(lines.Count);
+        foreach ((bool achieved, string text) in lines)
+        {
+            progressLines.Add(achieved ? $"{text} ✓" : text);
+        }
+
+        // Each column is as wide as its own widest line, headers included, rather than both
+        // taking a fixed fraction of the screen. The fractions this replaces were only ever
+        // right for one font at one resolution.
         float columnGap = Screen.width * ColumnGapFraction;
-        float columnsBudget = Screen.width * 0.5f - panelLeft - panelPadding * 2f;
-        float entryWidth = Mathf.Min(Screen.width * 0.21f, (columnsBudget - columnGap) * 0.5f);
-        float panelWidth = entryWidth * 2f + columnGap + panelPadding * 2f;
+        float progressWidth = Mathf.Max(
+            VanillaSkin.MeasureWidest(progressLines, VanillaSkin.Entry),
+            VanillaSkin.MeasureWidth("Progress", VanillaSkin.Header));
+        float deathLinkWidth = Mathf.Max(
+            VanillaSkin.MeasureWidest(deathLinkLines, VanillaSkin.Entry),
+            VanillaSkin.MeasureWidth("Deathlink", VanillaSkin.Header));
+
+        // Still capped to the same left-half budget the weapon list keeps to - neither panel
+        // may cover the pause menu. Shrunk in proportion when the two together overrun it, so
+        // a long line in one column does not squeeze the other out of existence.
+        float columnsBudget = Screen.width * 0.5f - panelLeft - panelPadding * 2f - columnGap;
+        if (progressWidth + deathLinkWidth > columnsBudget)
+        {
+            float scale = columnsBudget / (progressWidth + deathLinkWidth);
+            progressWidth *= scale;
+            deathLinkWidth *= scale;
+        }
+
+        float panelWidth = progressWidth + deathLinkWidth + columnGap + panelPadding * 2f;
 
         // The taller column decides the height, so neither can run out of the box.
-        int rowCount = Mathf.Max(lines.Count, deathLinkLines.Count);
+        int rowCount = Mathf.Max(progressLines.Count, deathLinkLines.Count);
         float panelHeight = headerHeight + rowCount * entryHeight + entryHeight * 0.5f;
 
         // Bottom-anchored to the weapon list rather than given a top of its own, so the gap
         // between the two blocks stays put whatever this one ends up containing.
         float panelTop = Screen.height * WeaponPanelTopFraction - panelHeight - entryHeight * 0.5f;
 
-        GUI.Box(new Rect(panelLeft, panelTop, panelWidth, panelHeight), "");
+        VanillaSkin.Box(new Rect(panelLeft, panelTop, panelWidth, panelHeight));
 
-        GUIStyle style = EntryStyle();
         float entryLeft = panelLeft + panelPadding;
-        float deathLinkLeft = entryLeft + entryWidth + columnGap;
+        float deathLinkLeft = entryLeft + progressWidth + columnGap;
         float headerTop = panelTop + entryHeight * 0.25f;
         float firstEntryTop = panelTop + headerHeight;
 
-        GUI.Label(new Rect(entryLeft, headerTop, entryWidth, headerHeight), "Progress", style);
-        GUI.Label(new Rect(deathLinkLeft, headerTop, entryWidth, headerHeight), "Deathlink", style);
+        VanillaSkin.Label(new Rect(entryLeft, headerTop, progressWidth, headerHeight),
+            "Progress", VanillaSkin.Header);
+        VanillaSkin.Label(new Rect(deathLinkLeft, headerTop, deathLinkWidth, headerHeight),
+            "Deathlink", VanillaSkin.Header);
 
-        for (int i = 0; i < lines.Count; i++)
+        for (int i = 0; i < progressLines.Count; i++)
         {
-            // U+2713 on the end of the line, the same mark the weapon list puts after a weapon
-            // that has earned its check.
-            string text = lines[i].Achieved ? $"{lines[i].Text} ✓" : lines[i].Text;
-
-            GUI.Label(new Rect(entryLeft, firstEntryTop + i * entryHeight, entryWidth, entryHeight),
-                text, style);
+            VanillaSkin.Label(new Rect(entryLeft, firstEntryTop + i * entryHeight, progressWidth, entryHeight),
+                progressLines[i], VanillaSkin.Entry);
         }
 
         for (int i = 0; i < deathLinkLines.Count; i++)
         {
-            GUI.Label(new Rect(deathLinkLeft, firstEntryTop + i * entryHeight, entryWidth, entryHeight),
-                deathLinkLines[i], style);
+            VanillaSkin.Label(new Rect(deathLinkLeft, firstEntryTop + i * entryHeight, deathLinkWidth, entryHeight),
+                deathLinkLines[i], VanillaSkin.Entry);
         }
     }
 
@@ -389,14 +426,6 @@ internal class ArchipelagoOverlay : MonoBehaviour
         return lines;
     }
 
-    /// <summary>The one label style both panels draw with, so they cannot drift apart.</summary>
-    private static GUIStyle EntryStyle() =>
-        new GUIStyle(GUI.skin.label)
-        {
-            fontSize = (int)(Screen.height * EntryFontFraction),
-            normal = { textColor = Color.white },
-        };
-
     /// <summary>
     /// The local player's unlocked weapons. Drawn under the progress block, and like it only
     /// while the game is paused - see <see cref="OnGUI"/> for that gate.
@@ -427,11 +456,31 @@ internal class ArchipelagoOverlay : MonoBehaviour
         float entryHeight = Screen.height * EntryHeightFraction;
         float headerHeight = entryHeight * 1.5f;
 
-        // A weapon name is much narrower than the old 22%-of-screen column, so the columns are
-        // packed to the width the text actually needs plus a gap. That is what buys the third
-        // column inside the same left-half budget.
-        float entryWidth = Screen.width * 0.145f;
-        float columnGap = Screen.width * 0.008f;
+        // Every line is built up front, before anything is measured or placed, because the
+        // column width comes from the longest of them. Numbering and the earned tick are part
+        // of the string, so they are part of what the column is sized against.
+        var entryTexts = new List<string>(obtained.Count);
+        for (int i = 0; i < obtained.Count; i++)
+        {
+            GameObject weapon = obtained[i];
+
+            // U+2713. If a future Unity build's default GUI font does not carry it the entry
+            // shows a box, in which case swap this for a plain "*".
+            string killMark = i >= firstKillEarned ? " ✓" : "";
+
+            // DisplayNameOf, not weapon.name: the pool is keyed on prefab names, and several
+            // of those are nothing like what the game calls the weapon on screen - the prefab
+            // named "Nugget" is the serac, "AK-K" is the ak. This panel is read next to the
+            // game, so it spells them the way the game does. DisplayNameOf falls back to the
+            // prefab name for anything carrying no ItemBehaviour.
+            entryTexts.Add(
+                $"{i + 1}. {(weapon == null ? "<missing>" : RouletteState.DisplayNameOf(weapon))}{killMark}");
+        }
+
+        // Packed to the width the longest weapon line actually needs rather than to a fraction
+        // of the screen, which is what buys a third column inside the same left-half budget.
+        float columnGap = Screen.width * ColumnGapFraction;
+        float entryWidth = VanillaSkin.MeasureWidest(entryTexts, VanillaSkin.Entry);
         float columnStride = entryWidth + columnGap;
 
         // Still confined to the left half of the screen so it cannot cover the pause menu, so
@@ -440,6 +489,12 @@ internal class ArchipelagoOverlay : MonoBehaviour
         float maxPanelWidth = Screen.width * 0.5f - panelLeft;
         float maxColumnsWidth = maxPanelWidth - panelPadding * 2f + columnGap;
         int entriesPerColumn = Mathf.Max(1, (int)((Screen.height * 0.68f - headerHeight) / entryHeight));
+
+        // A single column that overruns the budget on its own is clamped to it rather than
+        // dropped: one wide line must not leave the panel with no columns at all.
+        columnStride = Mathf.Min(columnStride, maxColumnsWidth);
+        entryWidth = columnStride - columnGap;
+
         int maxColumns = Mathf.Max(1, (int)(maxColumnsWidth / columnStride));
 
         // Hard cap: with 71 weapons in the game the full list can outgrow even the columns,
@@ -453,21 +508,24 @@ internal class ArchipelagoOverlay : MonoBehaviour
         int columnCount = Mathf.Max(1, Mathf.CeilToInt(entryCount / (float)entriesPerColumn));
         int rowCount = Mathf.Min(Mathf.Max(entryCount, 1), entriesPerColumn);
 
-        float panelWidth = columnCount * columnStride - columnGap + panelPadding * 2f;
+        // No "✓ = kill earned" legend: with a single column that text is longer than the
+        // weapon names it would be explaining, and it would set the width of the whole panel.
+        string header = $"Unlocked weapons ({obtained.Count})";
+
+        // The header can be wider than a single narrow column, so it gets a say in the panel
+        // width rather than being clipped by it - but never past the left-half budget.
+        float panelWidth = Mathf.Min(maxPanelWidth, Mathf.Max(
+            columnCount * columnStride - columnGap + panelPadding * 2f,
+            VanillaSkin.MeasureWidth(header, VanillaSkin.Header) + panelPadding * 2f));
         float panelHeight = headerHeight + rowCount * entryHeight + entryHeight * 0.5f;
 
-        GUI.Box(new Rect(panelLeft, panelTop, panelWidth, panelHeight), "");
-
-        GUIStyle style = EntryStyle();
+        VanillaSkin.Box(new Rect(panelLeft, panelTop, panelWidth, panelHeight));
 
         float firstColumnLeft = panelLeft + panelPadding;
         float firstEntryTop = panelTop + headerHeight;
 
-        GUI.Label(new Rect(firstColumnLeft, panelTop + entryHeight * 0.25f,
-            panelWidth - panelPadding * 2f, headerHeight),
-            // No "✓ = kill earned" legend: the header Rect is only as wide as the packed
-            // columns, so with a single column that text clips rather than explains.
-            $"Unlocked weapons ({obtained.Count})", style);
+        VanillaSkin.Label(new Rect(firstColumnLeft, panelTop + entryHeight * 0.25f,
+            panelWidth - panelPadding * 2f, headerHeight), header, VanillaSkin.Header);
 
         for (int i = 0; i < entryCount; i++)
         {
@@ -476,28 +534,12 @@ internal class ArchipelagoOverlay : MonoBehaviour
             float entryLeft = firstColumnLeft + i / entriesPerColumn * columnStride;
             float entryTop = firstEntryTop + i % entriesPerColumn * entryHeight;
 
-            string text;
-            if (truncated && i == entryCount - 1)
-            {
-                text = $"... and {obtained.Count - weaponCount} more";
-            }
-            else
-            {
-                GameObject weapon = obtained[i];
+            string text = truncated && i == entryCount - 1
+                ? $"... and {obtained.Count - weaponCount} more"
+                : entryTexts[i];
 
-                // U+2713. If a future Unity build's default GUI font does not carry it the
-                // entry shows a box, in which case swap this for a plain "*".
-                string killMark = i >= firstKillEarned ? " ✓" : "";
-
-                // DisplayNameOf, not weapon.name: the pool is keyed on prefab names, and
-                // several of those are nothing like what the game calls the weapon on screen -
-                // the prefab named "Nugget" is the serac, "AK-K" is the ak. This panel is read
-                // next to the game, so it spells them the way the game does. DisplayNameOf
-                // falls back to the prefab name for anything carrying no ItemBehaviour.
-                text = $"{i + 1}. {(weapon == null ? "<missing>" : RouletteState.DisplayNameOf(weapon))}{killMark}";
-            }
-
-            GUI.Label(new Rect(entryLeft, entryTop, entryWidth, entryHeight), text, style);
+            VanillaSkin.Label(new Rect(entryLeft, entryTop, entryWidth, entryHeight), text,
+                VanillaSkin.Entry);
         }
     }
     /// <summary>Cached so the reflection below does not run on every OnGUI pass.</summary>
