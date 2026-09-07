@@ -9,29 +9,29 @@ namespace Straftapelago.Finnegan_McD.org.Utils;
 /// styles, so this mod's overlay looks like it belongs to STRAFTAT rather than to Unity.
 /// </summary>
 /// <remarks>
-/// <para>Nothing here knows anything about the overlay's layout - it only answers "what does
-/// vanilla look like". <see cref="ArchipelagoOverlay"/> keeps every Rect and fraction it
+/// <para>Nothing here knows anything about the overlay's layout, it only finds 
+/// what vanilla looks like. <see cref="ArchipelagoOverlay"/> keeps every Rect and fraction it
 /// already had and simply draws with these styles.</para>
 /// <para>Both halves are borrowed from the game rather than shipped with the mod:</para>
 /// <list type="bullet">
 /// <item><description><b>Font.</b> STRAFTAT_Data/sharedassets0.assets carries real
-/// <see cref="Font"/> assets with embedded TTF data - "centurygothic", "GOTHICBI" (its bold
-/// italic), "Hussar" and "Liberation Sans" - alongside the TextMeshPro versions the game
+/// <see cref="Font"/> assets with embedded TTF data, "centurygothic", "GOTHICBI" (its bold
+/// italic), "Hussar" and "Liberation Sans", alongside the TextMeshPro versions the game
 /// actually draws its UI with. IMGUI cannot use a TMP_FontAsset, but it takes a plain Font
 /// directly, which is why this overlay can be in the game's face without being rewritten
 /// into TextMeshPro.</description></item>
-/// <item><description><b>Backdrop.</b> Drawn, not borrowed - see
+/// <item><description><b>Backdrop.</b> Drawn, not borrowed, see
 /// <see cref="BuildBackdrop"/>. The game has no rectangular panel sprite to reuse: its menu
 /// frames are 3D geometry (SM_PauseMenu_Frame, SM_Pause_Menu_Button_00, SM_HUD_00) and its
 /// flat UI textures are full-screen art (T_TabMenuBG_00 and T_TabMenu_00 are both 1920x1080,
 /// T_PauseMenu_00 is 1024x1024). Stretching one of those into a panel-sized rect gives a
-/// tapered blob, which is exactly what the first attempt at this produced. What the panels
-/// imitate instead is vanilla's look - a light outline on a near-black fill - with the
-/// outline colour taken from the game's own UI text.</description></item>
+/// tapered blob. 
+/// What the panels imitate instead is vanilla's look, an outline on a near-black fill, drawn in
+/// <see cref="TextColor"/>, the one colour the whole overlay uses.</description></item>
 /// </list>
 /// <para>Every lookup falls back rather than throwing, and each one logs once what it
 /// settled on. A game update that renames an asset therefore costs the mod its styling and
-/// says so in the log - it does not cost it the overlay.</para>
+/// says so in the log.</para>
 /// </remarks>
 internal static class VanillaSkin
 {
@@ -53,12 +53,8 @@ internal static class VanillaSkin
     /// Game textures to use as the panel backdrop instead of the drawn one, best first.
     /// </summary>
     /// <remarks>
-    /// Empty on purpose, and kept as the seam for filling in later. The obvious candidates
-    /// are not panels: T_TabMenuBG_00 and T_TabMenu_00 are 1920x1080 and T_PauseMenu_00 is
-    /// 1024x1024 - full-screen menu art, so squeezing one into a panel rect gives a tapered
-    /// blob rather than a box. A name added here is only used if the asset turns out to be a
-    /// Sprite with a real 9-slice border, which is what makes a texture safe to resize; see
-    /// <see cref="ResolveBackdrop"/>.
+    /// Empty on purpose, and kept as the seam for filling in later. The current plan is to have a friend create a backdrop to use; 
+    /// see <see cref="ResolveBackdrop"/>.
     /// </remarks>
     private static readonly string[] BackdropNames = { };
 
@@ -86,12 +82,15 @@ internal static class VanillaSkin
 
     /// <summary>
     /// The panel texture this class drew, as opposed to one borrowed from the game. Held so
-    /// it can be destroyed when the styles are rebuilt - otherwise every resolution change
+    /// it can be destroyed when the styles are rebuilt, otherwise every resolution change
     /// would leak one.
     /// </summary>
     private static Texture2D drawnBackdrop;
 
-    private static Color textColor = Color.white;
+    /// <summary>
+    /// The colour every panel's text and outline is drawn in.
+    /// </summary>
+    private static readonly Color TextColor = new Color(0.35f, 0.95f, 0.40f, 1f);
 
     private static GUIStyle panelStyle;
     private static GUIStyle headerStyle;
@@ -102,6 +101,14 @@ internal static class VanillaSkin
     private static int builtForHeight;
 
     private static bool resolved;
+
+    /// <summary>
+    /// Whether <see cref="Resolve"/> actually came back with a body font. What makes this
+    /// worth keeping separate from <c>bodyFont != null</c> is that null is a legitimate
+    /// answer, as it means "leave Unity's default font alone", so only a font that resolved
+    /// and has since been destroyed is grounds for looking again. See <see cref="EnsureBuilt"/>.
+    /// </summary>
+    private static bool resolvedBodyFont;
     private static bool loggedFont;
     private static bool loggedBackdrop;
 
@@ -140,7 +147,7 @@ internal static class VanillaSkin
     /// </summary>
     /// <remarks>
     /// IMGUI has no equivalent of the SDF outline vanilla's TextMeshPro labels carry, and
-    /// every panel here is drawn over something - the countdown over live gameplay, the
+    /// every panel here is drawn over something, the countdown over live gameplay, the
     /// other two over the pause menu's 3D geometry. A one-pixel offset in near-black is
     /// what keeps a white line readable against a bright map.
     /// </remarks>
@@ -164,10 +171,7 @@ internal static class VanillaSkin
     /// <see cref="Label"/>'s shadow takes on the right.
     /// </summary>
     /// <remarks>
-    /// This is what lets the panels size themselves to what they actually contain. They used
-    /// to take fixed fractions of the screen width, which was only ever right for one font at
-    /// one resolution - and once the font became the game's own, those fractions left the
-    /// progress box far wider than its text and the weapon list narrower than its.
+    /// This is what lets the panels size themselves to what they actually contain. 
     /// </remarks>
     public static float MeasureWidth(string text, GUIStyle style)
     {
@@ -210,13 +214,28 @@ internal static class VanillaSkin
     /// </summary>
     private static void EnsureBuilt()
     {
-        if (!resolved || bodyFont == null || backdrop == null)
+        // Only a font that resolved and has since been destroyed, like a Unity fake-null after a
+        // scene teardown is grounds for another lookup. The two conditions this replaces
+        // were both permanently true on a normal run: BackdropNames is empty, so `backdrop`
+        // is always null and the drawn texture is always what gets used, and a body font
+        // that never resolved stays null on purpose. Either one made this re-resolve on
+        // every single style access, three Resources.FindObjectsOfTypeAll sweeps over every
+        // loaded object, plus a fresh panel Texture2D with SetPixels and Apply, and the
+        // panels touch a style once per label and again per measured string. That is a few
+        // hundred full sweeps a frame with the weapon list up, which is why the pause menu
+        // crawled: these panels only draw while paused, so the cost only ever showed there.
+        if (!resolved || (resolvedBodyFont && bodyFont == null))
         {
             Resolve();
             builtForHeight = 0;
         }
 
-        if (builtForHeight == Screen.height && entryStyle != null) return;
+        // The drawn texture is HideAndDontSave so it survives scene loads, but if something
+        // does destroy it the styles have to be rebuilt or the panels lose their backdrop.
+        // Safe as a condition because rebuilding always clears it, unlike the two above.
+        bool lostBackdrop = backdrop == null && drawnBackdrop == null;
+
+        if (builtForHeight == Screen.height && entryStyle != null && !lostBackdrop) return;
 
         builtForHeight = Screen.height;
         BuildStyles();
@@ -228,8 +247,8 @@ internal static class VanillaSkin
 
         bodyFont = ResolveFont(BodyFontNames);
         headerFont = ResolveFont(HeaderFontNames) ?? bodyFont;
+        resolvedBodyFont = bodyFont != null;
         ResolveBackdrop();
-        ResolveTextColor();
 
         if (!loggedFont)
         {
@@ -249,7 +268,7 @@ internal static class VanillaSkin
     /// game's scenes, not files under a Resources folder, so there is no path to load them
     /// by. They are loaded because vanilla's own TextMeshPro assets reference them.</para>
     /// <para>The OS fallback is worth having because centurygothic is a Microsoft font -
-    /// GOTHIC.TTF is on Windows already - so a game update that renames the asset still
+    /// GOTHIC.TTF is on Windows already, so a game update that renames the asset still
     /// leaves the overlay in the right face on the platform the game is mostly played on.</para>
     /// </remarks>
     private static Font ResolveFont(string[] names)
@@ -272,7 +291,7 @@ internal static class VanillaSkin
 
             // Second pass, through TextMeshPro. A TMP_FontAsset keeps a reference to the
             // Font it was baked from, and that reference is what put the TTF in the build in
-            // the first place - so this reaches the same objects by another road if the pass
+            // the first place, so this reaches the same objects by another road if the pass
             // above missed them (a differently named asset, say).
             foreach (string name in names)
             {
@@ -294,7 +313,7 @@ internal static class VanillaSkin
             return null;
         }
 
-        // OS fallback, and only for the body face - the header falls back to the body font,
+        // OS fallback, and only for the body face, the header falls back to the body font,
         // which is a closer match than a second guess at what Windows has installed.
         Font osFont = Font.CreateDynamicFontFromOSFont("Century Gothic", 16);
         return Usable(osFont) ? osFont : null;
@@ -305,7 +324,7 @@ internal static class VanillaSkin
     /// </summary>
     /// <remarks>
     /// Every font size in the overlay is a fraction of the screen height, and a non-dynamic
-    /// font ignores <see cref="GUIStyle.fontSize"/> entirely - it only has the sizes it was
+    /// font ignores <see cref="GUIStyle.fontSize"/> entirely, as it only has the sizes it was
     /// baked at. Taking one would make the panels wrong at every resolution but one, which
     /// is worse than not styling them at all.
     /// </remarks>
@@ -329,7 +348,7 @@ internal static class VanillaSkin
                     if (!Matches(candidate.name, name) && !Matches(candidate.texture.name, name)) continue;
 
                     // An atlased sprite is a window onto a shared page, and IMGUI can only
-                    // draw a whole texture - taking one would paint every other sprite on
+                    // draw a whole texture, as taking one would paint every other sprite on
                     // that page into the panel.
                     if (candidate.packed) continue;
                     if (!IsWholeTexture(candidate)) continue;
@@ -340,7 +359,7 @@ internal static class VanillaSkin
 
                     // A zero border means the artist never sliced it, so the whole texture
                     // stretches to fill the rect. That is fine for a flat colour and wrong
-                    // for anything with a shape to it - which is every UI texture this game
+                    // for anything with a shape to it, which is every UI texture this game
                     // has. Refused rather than drawn as a smear.
                     if (border == Vector4.zero) continue;
 
@@ -384,41 +403,6 @@ internal static class VanillaSkin
         Mathf.Approximately(sprite.rect.width, sprite.texture.width)
         && Mathf.Approximately(sprite.rect.height, sprite.texture.height);
 
-    /// <summary>
-    /// Takes the label colour off whatever TextMeshPro label the game currently has on
-    /// screen, so the overlay tracks a palette change rather than hardcoding one.
-    /// </summary>
-    /// <remarks>
-    /// Deliberately undemanding about which label it finds: vanilla's UI is essentially one
-    /// colour, so any of them is the right answer, and a wrong-but-vanilla colour is still
-    /// closer than a guess. Very dark and fully transparent results are rejected - those are
-    /// prefab defaults and tween-hidden labels, not the colour anything is drawn in.
-    /// </remarks>
-    private static void ResolveTextColor()
-    {
-        textColor = Color.white;
-
-        try
-        {
-            foreach (TMP_Text candidate in Resources.FindObjectsOfTypeAll<TMP_Text>())
-            {
-                if (candidate == null || !candidate.gameObject.activeInHierarchy) continue;
-
-                Color color = candidate.color;
-                if (color.a < 0.5f) continue;
-                if (color.r + color.g + color.b < 1.5f) continue;
-
-                textColor = new Color(color.r, color.g, color.b, 1f);
-                return;
-            }
-        }
-        catch (Exception error)
-        {
-            Plugin.BepinLogger.LogWarning(
-                $"[Skin] text colour lookup failed; using white.{Environment.NewLine}{error}");
-        }
-    }
-
     private static void BuildStyles()
     {
         // Fractions of the screen height rather than pixels, the same way every other size in
@@ -452,16 +436,16 @@ internal static class VanillaSkin
 
     /// <summary>
     /// Draws the panel texture: a near-black fill inside an outline the colour of the game's
-    /// UI text. Nine texels plus the outline, sliced so only the middle stretches - which is
+    /// UI text. Nine texels plus the outline, sliced so only the middle stretches, which is
     /// what keeps the outline exactly <paramref name="thickness"/> pixels thick whatever size
     /// the panel ends up.
     /// </summary>
     /// <remarks>
     /// This is here because the game has nothing to borrow: every flat UI texture it ships is
     /// full-screen art, and its menu frames are 3D meshes. So the panels imitate the vanilla
-    /// look - light outline, dark fill, which is what the options screen reads as - rather
-    /// than reusing a texture that was never a panel. The outline colour still comes from
-    /// vanilla, via <see cref="ResolveTextColor"/>.
+    /// look, light outline, dark fill, which is what the options screen reads as, rather
+    /// than reusing a texture that was never a panel. The outline is drawn in
+    /// <see cref="TextColor"/>, so it matches the text inside it.
     /// </remarks>
     private static void BuildBackdrop(out Texture2D texture, out int thickness)
     {
@@ -475,7 +459,7 @@ internal static class VanillaSkin
         int size = thickness * 2 + 2;
 
         // The previous one is dead the moment this replaces it, and BuildStyles runs again on
-        // every resolution change - so without this each change would leave a texture behind.
+        // every resolution change, so without this each change would leave a texture behind.
         if (drawnBackdrop != null) UnityEngine.Object.Destroy(drawnBackdrop);
 
         drawnBackdrop = new Texture2D(size, size, TextureFormat.RGBA32, false)
@@ -486,7 +470,7 @@ internal static class VanillaSkin
             hideFlags = HideFlags.HideAndDontSave,
         };
 
-        Color outline = new Color(textColor.r, textColor.g, textColor.b, 0.85f);
+        Color outline = new Color(TextColor.r, TextColor.g, TextColor.b, 0.85f);
         Color[] pixels = new Color[size * size];
 
         for (int y = 0; y < size; y++)
@@ -515,7 +499,7 @@ internal static class VanillaSkin
             wordWrap = false,
             padding = new RectOffset(0, 0, 0, 0),
             margin = new RectOffset(0, 0, 0, 0),
-            normal = { textColor = textColor },
+            normal = { textColor = TextColor },
         };
 
         // Left alone when nothing resolved, so the style keeps GUI.skin's own font rather
@@ -526,7 +510,7 @@ internal static class VanillaSkin
     }
 
     /// <summary>
-    /// The authored border, scaled to this resolution and never allowed to reach zero - a
+    /// The authored border, scaled to this resolution and never allowed to reach zero, as a
     /// zero border turns the 9-slice into a plain stretch, which smears the corners across
     /// the whole panel.
     /// </summary>

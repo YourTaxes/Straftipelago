@@ -15,7 +15,7 @@ namespace Straftapelago.Finnegan_McD.org.Utils;
 /// BepInEx's configured entrypoint here is <c>UnityEngine.CoreModule</c> /
 /// <c>Application</c> / <c>.cctor</c>, which runs before the first scene has
 /// loaded. Unity resets the DontDestroyOnLoad scene when that first scene comes
-/// up, so everything created that early is destroyed with it - including
+/// up, so everything created that early is destroyed with it, including
 /// BepInEx_Manager, and therefore every plugin component BepInEx hosts on it.
 /// Diagnostics on this install caught it precisely: the Plugin component logged
 /// OnEnable, then OnDisable and OnDestroy, all on frame 0, so its OnGUI never
@@ -23,8 +23,8 @@ namespace Straftapelago.Finnegan_McD.org.Utils;
 /// same run only because UniverseLib defers creating its objects until after the
 /// game is up, which is the same workaround this class applies.)
 ///
-/// Harmony patches and static state are unaffected by any of this - the assembly
-/// stays loaded - which is why the rest of the mod worked while the GUI did not,
+/// Harmony patches and static state are unaffected by any of this, as the assembly
+/// stays loaded,which is why the rest of the mod worked while the GUI did not,
 /// and why re-creating the host object from a static hook works.
 /// </remarks>
 internal class ArchipelagoOverlay : MonoBehaviour
@@ -32,24 +32,33 @@ internal class ArchipelagoOverlay : MonoBehaviour
     private const string HostName = "Straftapelago_Overlay";
 
     // Shared by both panels, and all fractions of the screen rather than pixels so the
-    // overlay scales with resolution instead of assuming one - the same thing
+    // overlay scales with resolution instead of assuming one, the same thing
     // ArchipelagoConsole does. The two panels are stacked: the progress block sits
     // directly above WeaponPanelTopFraction, which is where the weapon list starts.
     private const float PanelLeftFraction = 0.02f;
     private const float WeaponPanelTopFraction = 0.22f;
 
     /// <summary>
-    /// Where the Metronome countdown sits. Top left, on the same left edge as the two paused
-    /// panels, and well above where the higher of them starts - those are only ever up while
-    /// paused, but a countdown does not stop for the pause menu, so the two must not collide.
+    /// How far down the countdown boxes sit. Well above where the higher of the two paused
+    /// panels starts, those are only ever up while paused, but a countdown does not stop for
+    /// the pause menu, so the two must not collide.
     /// </summary>
     private const float MetronomePanelTopFraction = 0.02f;
+
+    /// <summary>
+    /// How far in the countdown boxes sit, in place of <see cref="PanelLeftFraction"/>. Set
+    /// here rather than derived from anything on screen: the two paused panels are only up
+    /// while paused and a countdown runs whether or not they are, so this corner answers to
+    /// nothing but itself. Roughly where the progress box's "Progress" header ends at 1080p,
+    /// which is what it was eyeballed against, move this one number to move both boxes.
+    /// </summary>
+    private const float CountdownPanelLeftFraction = 0.07f;
     private const float PanelPaddingFraction = 0.006f;
     private const float EntryHeightFraction = 0.022f;
 
     /// <summary>
     /// How opaque the countdown box's backdrop is. Lower than the other two because it is
-    /// the only panel drawn over live gameplay - see <see cref="DrawCountdowns"/>.
+    /// the only panel drawn over live gameplay, see <see cref="DrawCountdowns"/>.
     /// </summary>
     private const float CountdownPanelAlpha = 0.75f;
 
@@ -127,13 +136,13 @@ internal class ArchipelagoOverlay : MonoBehaviour
 
         // Here rather than on PlayerHealth.Update, where the Metronome trap's countdown lives:
         // a Made in Heaven is the lobby's clock, not the local player's, so it has to keep
-        // running while they are dead, spectating or waiting to respawn - and PlayerHealth.Update
+        // running while they are dead, spectating or waiting to respawn, and PlayerHealth.Update
         // stops in all three. This is the mod's one guaranteed per-frame main-thread callback,
         // which is exactly what that needs. It holds itself between rounds; see MadeInHeaven.
         MadeInHeaven.Tick();
 
-        // Last of the three. An action here can write to either of the sinks above - applying
-        // Green Mode puts a line in the killfeed - and draining it after them means such a line
+        // An action here can write to either of the sinks above, applying
+        // Green Mode puts a line in the killfeed, and draining it after them means such a line
         // waits a frame rather than sitting in a queue that has already been pumped.
         MainThreadActions.Pump();
     }
@@ -169,8 +178,8 @@ internal class ArchipelagoOverlay : MonoBehaviour
         // hides things.)
         if (PauseManager.Instance == null || !PauseManager.Instance.pause) return;
 
-        // The connection UI that used to be here - the Archipelago version/status labels, the
-        // host/slot/password text fields, the Connect button and the console window - is now
+        // The connection UI that used to be here, the Archipelago version/status labels, the
+        // host/slot/password text fields, the Connect button and the console window, is now
         // the mod's Mod Menu page (ArchipelagoMenu) and the killfeed (ArchipelagoConsole).
         // What is left is this mod's own unlocked-weapons panel, which was never part of that
         // default Archipelago GUI.
@@ -190,7 +199,7 @@ internal class ArchipelagoOverlay : MonoBehaviour
     /// </remarks>
     private static void DrawCountdowns()
     {
-        // Made in Heaven takes the slot when it is running, because it outranks the trap - it
+        // Made in Heaven takes the slot when it is running, because it outranks the trap, it
         // cancels one outright on activation and holds back any that arrive while it runs. So the
         // two are almost never both up; when they are, the trap sits directly underneath rather
         // than on top of it. Drawn in that order so the higher-ranked clock keeps the corner.
@@ -212,7 +221,7 @@ internal class ArchipelagoOverlay : MonoBehaviour
     {
         if (secondsRemaining <= 0f) return;
 
-        float panelLeft = Screen.width * PanelLeftFraction;
+        float panelLeft = Screen.width * CountdownPanelLeftFraction;
         float panelPadding = Screen.width * PanelPaddingFraction;
         float entryHeight = Screen.height * EntryHeightFraction;
         float headerHeight = entryHeight * 1.5f;
@@ -251,19 +260,19 @@ internal class ArchipelagoOverlay : MonoBehaviour
     /// </summary>
     /// <remarks>
     /// <para>The three lines have deliberately different spans, which is why each says its own.
-    /// Takes and rounds won are this session only - vanilla accumulates neither across matches,
+    /// Takes and rounds won are this session only, as vanilla accumulates neither across matches,
     /// so TakeTracker counts them from process start. Weapons earned is the seed's progress and
     /// survives restarts, because it is rebuilt on connect from the locations the room says this
     /// slot has already checked.</para>
-    /// <para>Earned means a first kill was scored with it and its check went out - the ticked
-    /// entries in the list below - not merely that the room granted it. The weapons that carry
+    /// <para>Earned means a first kill was scored with it and its check went out, which are the ticked
+    /// entries in the list below, not merely that the room granted it. The weapons that carry
     /// no check are out of both halves of the fraction; see RouletteState.EarnedWeaponCount.</para>
     /// <para>The first two lines are the room's two goals, so each carries the room's threshold
     /// and takes a tick on the end once <see cref="GoalTracker"/> says that goal is achieved.
     /// Both only
     /// appear while connected: offline no room is asking for anything, and the apworld defaults
     /// ServerData is holding are not a goal anyone agreed to. Rounds won has no goal behind it,
-    /// so it never takes a tick - the number beside it is the room's round_checks, which is how
+    /// so it never takes a tick, the number beside it is the room's round_checks, which is how
     /// many Round_N checks exist, not something to reach.</para>
     /// </remarks>
     private static void DrawSessionProgress()
@@ -302,7 +311,7 @@ internal class ArchipelagoOverlay : MonoBehaviour
         // Against the room's cap rather than bare, because that cap is the number that matters to
         // the player: Round_1 through Round_N are checks, and a round won past N sends nothing.
         // Offline the cap is only the apworld's default sitting in ServerData, which no room has
-        // agreed to, so the plain count is shown instead - the same reason the two goal lines drop
+        // agreed to, so the plain count is shown instead, the same reason the two goal lines drop
         // their thresholds when showGoals is false.
         lines.Add((false, showGoals
             ? $"Rounds won this session: {TakeTracker.RoundsWon} / {serverData.RoundChecks} checks"
@@ -331,7 +340,7 @@ internal class ArchipelagoOverlay : MonoBehaviour
             VanillaSkin.MeasureWidest(deathLinkLines, VanillaSkin.Entry),
             VanillaSkin.MeasureWidth("Deathlink", VanillaSkin.Header));
 
-        // Still capped to the same left-half budget the weapon list keeps to - neither panel
+        // Still capped to the same left-half budget the weapon list keeps to, neither panel
         // may cover the pause menu. Shrunk in proportion when the two together overrun it, so
         // a long line in one column does not squeeze the other out of existence.
         float columnsBudget = Screen.width * 0.5f - panelLeft - panelPadding * 2f - columnGap;
@@ -383,8 +392,8 @@ internal class ArchipelagoOverlay : MonoBehaviour
     /// </summary>
     /// <remarks>
     /// <para>The counter is the handler's own, not a copy kept here, so what is shown is exactly
-    /// what decides the next send. Both are read on the main thread - this is OnGUI, and the
-    /// counter only ever moves in PlayerHealth.Update - so the number cannot be caught
+    /// what decides the next send. Both are read on the main thread, as this is OnGUI, and the
+    /// counter only ever moves in PlayerHealth.Update, so the number cannot be caught
     /// mid-change.</para>
     /// <para>The handler is built out of the session's DeathLinkService, so it exists only from
     /// a successful login onwards. Before that the column says so rather than reading the
@@ -428,7 +437,7 @@ internal class ArchipelagoOverlay : MonoBehaviour
 
     /// <summary>
     /// The local player's unlocked weapons. Drawn under the progress block, and like it only
-    /// while the game is paused - see <see cref="OnGUI"/> for that gate.
+    /// while the game is paused, see <see cref="OnGUI"/> for that gate.
     /// </summary>
     /// <remarks>
     /// RouletteState holds this machine's player's pool and nothing else — the roll happens
@@ -443,9 +452,7 @@ internal class ArchipelagoOverlay : MonoBehaviour
         if (roulette == null) return;
 
         // One list, in progress order: weapons still waiting for their first kill at the
-        // top, the ones that already earned their check at the bottom with a tick. Showing
-        // both is what stops a weapon appearing to vanish from the panel the moment it is
-        // used - it has not been lost, it has been completed.
+        // top, the ones that already earned their check at the bottom with a tick. 
         var obtained = new List<GameObject>(roulette.obtained_Items);
         int firstKillEarned = obtained.Count;
         obtained.AddRange(roulette.hasKill_Items);
@@ -469,7 +476,7 @@ internal class ArchipelagoOverlay : MonoBehaviour
             string killMark = i >= firstKillEarned ? " ✓" : "";
 
             // DisplayNameOf, not weapon.name: the pool is keyed on prefab names, and several
-            // of those are nothing like what the game calls the weapon on screen - the prefab
+            // of those are nothing like what the game calls the weapon on screen, for example the prefab
             // named "Nugget" is the serac, "AK-K" is the ak. This panel is read next to the
             // game, so it spells them the way the game does. DisplayNameOf falls back to the
             // prefab name for anything carrying no ItemBehaviour.
@@ -513,7 +520,7 @@ internal class ArchipelagoOverlay : MonoBehaviour
         string header = $"Unlocked weapons ({obtained.Count})";
 
         // The header can be wider than a single narrow column, so it gets a say in the panel
-        // width rather than being clipped by it - but never past the left-half budget.
+        // width rather than being clipped by it, but never past the left-half budget.
         float panelWidth = Mathf.Min(maxPanelWidth, Mathf.Max(
             columnCount * columnStride - columnGap + panelPadding * 2f,
             VanillaSkin.MeasureWidth(header, VanillaSkin.Header) + panelPadding * 2f));
