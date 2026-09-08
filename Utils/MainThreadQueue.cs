@@ -8,8 +8,8 @@ namespace Straftapelago.Finnegan_McD.org.Utils;
 /// </summary>
 /// <remarks>
 /// <para>Both of this mod's message sinks need the same thing. Messages arrive on threads that
-/// are not Unity's - the Archipelago client's MessageLog callback fires on its websocket
-/// thread, and <c>HandleConnectResult</c> runs on a ThreadPool thread - while displaying one
+/// are not Unity's, as the Archipelago client's MessageLog callback fires on its websocket
+/// thread, and <c>HandleConnectResult</c> runs on a ThreadPool thread while displaying one
 /// Instantiates a prefab, and every Unity API involved is main-thread-only. So a message
 /// cannot be written where it is produced.</para>
 /// <para>The writer returns false to mean "not ready yet, ask again later" rather than

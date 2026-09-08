@@ -65,7 +65,7 @@ internal static class GreenModeTint
         if (grading == null) return;
 
         // A PPv2 parameter is only read when its override is on, and colorFilter's is off in
-        // a profile that never touches it - without this the value would be set and ignored.
+        // a profile that never touches it, without this the value would be set and ignored.
         grading.colorFilter.overrideState = true;
         grading.colorFilter.value = ArchipelagoMenu.GreenMode.Value ? Tint : Neutral;
     }
@@ -78,7 +78,7 @@ internal static class GreenModeTint
     /// Every controller, rather than <c>FirstPersonController.instance</c>: that static is
     /// assigned by each player's Awake in turn, so in a match it names whichever player
     /// happened to spawn last, not the local one. Applying to all of them is correct and
-    /// costs nothing - a remote player's camera is not rendering anyway.
+    /// costs nothing, as a remote player's camera is not rendering anyway.
     /// </remarks>
     public static void RefreshAll()
     {

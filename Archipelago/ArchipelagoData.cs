@@ -176,7 +176,7 @@ public class ArchipelagoData
     }
 
     /// <summary>
-    /// assigns the slot data and seed to our data handler. any necessary setup using this data can be done here.
+    /// assigns the slot data and seed to my data handler. any necessary setup using this data can be done here.
     /// </summary>
     /// <param name="roomSlotData">slot data of your slot from the room</param>
     /// <param name="roomSeed">seed name of this session</param>
