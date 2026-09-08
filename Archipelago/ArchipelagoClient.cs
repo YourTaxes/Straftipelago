@@ -23,19 +23,13 @@ public class ArchipelagoClient
 
     public static ArchipelagoData ServerData = new();
     // Public because the two PlayerHealth.Update patches in deathLinkPatches reach it as
-    // Plugin.ArchipelagoClient?.DeathLinkHandler - one to report a local death, one to pump the
-    // received queue. Null until a successful login, which is why both of them null-check it.
+    // Plugin.ArchipelagoClient?.DeathLinkHandler.
     public DeathLinkHandler DeathLinkHandler;
     private ArchipelagoSession session;
 
     /// <summary>
     /// Whether this slot is currently marked ready with the room, toggled by /ap_ready.
     /// </summary>
-    /// <remarks>
-    /// Tracked here because readiness is a fire-and-forget StatusUpdate packet - the server
-    /// keeps the status but never reports it back, so nothing else on this side knows which
-    /// way the next toggle should go. Cleared on disconnect, so a new room starts unready.
-    /// </remarks>
     private bool ready;
 
     /// <summary>
@@ -60,7 +54,7 @@ public class ArchipelagoClient
             Plugin.BepinLogger.LogError(e);
         }
 
-        // CreateSession throws on an address it cannot parse, which the catch above logs -
+        // CreateSession throws on an address it cannot parse, which the catch above logs,
         // but it leaves session null, and TryConnect dereferences it inside a ThreadPool work
         // item where its own try/catch cannot see the throw. Report it here instead.
         if (session == null)
@@ -88,7 +82,7 @@ public class ArchipelagoClient
     }
 
     /// <summary>
-    /// attempt to connect to the server with our connection info
+    /// attempt to connect to the server with the connection info
     /// </summary>
     private void TryConnect()
     {
@@ -177,7 +171,7 @@ public class ArchipelagoClient
     /// <para>Assigning the two Mod Menu entries is what mirrors the room's answer onto the Mod
     /// Menu page and into the .cfg. A BepInEx entry only raises SettingChanged when the value
     /// actually changes, so the tint refresh and its killfeed line happen once, and only when
-    /// the room disagrees with what was already set. Both stay editable afterwards - the room
+    /// the room disagrees with what was already set. Both stay editable afterwards because the room
     /// decides them at connect, not for the rest of the session.</para>
     /// <para>Death link is not applied here: <see cref="DeathLinkHandler"/> is constructed with
     /// the value, which subscribes on the server side before any frame can report a death.</para>
@@ -196,8 +190,7 @@ public class ArchipelagoClient
             ArchipelagoMenu.RefreshDisplayedValues();
 
             // The three weapon toggles only take effect through a rebuild, and the pool also has
-            // to pick up whatever items the login has already delivered - both of which this one
-            // call covers.
+            // to pick up whatever items the login has already delivered which are both covered by this call.
             Plugin.RouletteState?.Reset();
 
             // The round counter is memory-only and starts at zero with the process, so a rejoin
@@ -218,7 +211,7 @@ public class ArchipelagoClient
     }
 
     /// <summary>
-    /// something went wrong, or we need to properly disconnect from the server. cleanup and re null our session
+    /// something went wrong, or the mod need to properly disconnect from the server. cleanup and re null our session
     /// </summary>
     /// <remarks>
     /// Public because the Mod Menu page's Disconnect button calls it (see
@@ -373,9 +366,9 @@ public class ArchipelagoClient
     }
 
     /// <summary>
-    /// we received an item so reward it here
+    /// the player received an item so reward it here
     /// </summary>
-    /// <param name="helper">item helper which we can grab our item from</param>
+    /// <param name="helper">item helper which the player gets their item throug</param>
     private void OnItemReceived(ReceivedItemsHelper helper)
     {
         // Dequeued FIRST, unconditionally, and only then judged. This event fires once per item
@@ -463,7 +456,7 @@ public class ArchipelagoClient
 
     /// <summary>
     /// Whether an arriving trap or Health may actually go off, as opposed to being one the
-    /// room is only reminding us we already had.
+    /// room is only reminding the player they already had.
     /// </summary>
     /// <remarks>
     /// <para>The room replays this slot's ENTIRE inventory on every connect. For a weapon that

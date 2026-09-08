@@ -394,7 +394,7 @@ public class GrabPatches
     // force-sets obj.layer back to 8 immediately after OnGrab returns, regardless of what
     // happens in this postfix. Weapon.DespawnObject() refuses to despawn while layer is 8
     // or 9, so scheduling the despawn inline here would silently no-op forever. Deferring
-    // by one frame lets that caller finish first before we force the layer back down.
+    // by one frame lets that caller finish first before forcing the layer back down.
     static System.Collections.IEnumerator DelayedRouletteDespawn(int rollId, ItemBehaviour rouletteIb, Gun rouletteGun)
     {
         yield return null;
@@ -435,7 +435,7 @@ public class OnDropPatch
         rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
         rb.drag = 0f;
         rb.interpolation = RigidbodyInterpolation.Interpolate;
-        // Vanilla OnDrop() assigns this private field; since we skip the vanilla body (return false)
+        // Vanilla OnDrop() assigns this private field; since the vanilla body is skipped(return false)
         // it never gets set, leaving Update()'s "tempRb == null" perpetual transform.Rotate() active forever.
         t.Field("tempRb").SetValue(rb);
         float ejectForce = t.Field<float>("ejectForce").Value;

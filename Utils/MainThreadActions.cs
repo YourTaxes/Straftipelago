@@ -7,9 +7,9 @@ namespace Straftapelago.Finnegan_McD.org.Utils;
 /// Holds work produced off Unity's thread until the main thread can run it.
 /// </summary>
 /// <remarks>
-/// <para>The Archipelago client decides things on threads that are not Unity's - slot data is
+/// <para>The Archipelago client decides things on threads that are not Unity's, slot data is
 /// read in <c>HandleConnectResult</c> on a ThreadPool thread, and items arrive on the client's
-/// websocket thread - while acting on either of them is main-thread-only. Applying Green Mode
+/// websocket thread, while acting on either of them is main-thread-only. Applying Green Mode
 /// touches <c>Object.FindObjectsOfType</c> and instantiates a killfeed line; rebuilding the
 /// roulette pool reads <c>SpawnerManager</c>. So the decision and the action have to be split.</para>
 /// <para>Deliberately not <see cref="MainThreadQueue"/>: that one holds strings, hands each to a

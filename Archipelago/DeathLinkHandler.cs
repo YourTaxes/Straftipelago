@@ -97,32 +97,32 @@ public class DeathLinkHandler
 
     /// <summary>
     /// Deaths waiting to be applied. Filled on the Archipelago client's websocket thread and
-    /// drained on Unity's main thread, so every touch of it is locked - Queue&lt;T&gt; corrupts its
+    /// drained on Unity's main thread, so every touch of it is locked. It corrupts its
     /// backing array if an Enqueue lands in the middle of a Dequeue. Same reason
     /// <see cref="Utils.MainThreadQueue"/> locks.
     /// </summary>
     private readonly Queue<PendingDeath> deathLinks = new();
 
     /// <summary>
-    /// Set while a death this handler caused is still working its way back to us, so that it is
-    /// not immediately sent out again as a death of our own.
+    /// Set while a death this handler caused is still working its way back to the player, so that it is
+    /// not immediately sent out again as a death the plyaer caused.
     /// </summary>
     /// <remarks>
     /// <see cref="KillPlayer"/> goes through FirstPersonController.DespawnObject, a ServerRpc
     /// whose logic sets health to -8f. That lands back on this client a frame or two later and is
-    /// indistinguishable, at PlayerHealth.Update, from any other death - so without this latch a
+    /// indistinguishable, at PlayerHealth.Update, from any other death, so without this latch a
     /// received death bounces straight back into the multiworld and every linked world dies again.
     /// </remarks>
     private bool suppressNextDeath;
 
     /// <summary>
-    /// instantiates our death link handler, sets up the hook for receiving death links, and enables death link if needed
+    /// instantiates the death link handler, sets up the hook for receiving death links, and enables death link if needed
     /// </summary>
-    /// <param name="deathLinkService">The new DeathLinkService that our handler will use to send and
+    /// <param name="deathLinkService">The new DeathLinkService that the handler will use to send and
     /// receive death links</param>
-    /// <param name="enableDeathLink">Whether we should enable death link or not on startup</param>
+    /// <param name="enableDeathLink">Whether the mod should enable death link or not on startup</param>
     /// <param name="deathsPerLinkSetting">The room's deaths_per_link. Anything below 1 is taken as
-    /// 1 - "a link every no deaths" has no meaning, and every-death is what a room that does not
+    /// 1, as "a link every no deaths" has no meaning, and every-death is what a game that does not
     /// offer the option behaves like. ArchipelagoData clamps it too; this is here so the invariant
     /// holds for any other caller as well.</param>
     public DeathLinkHandler(
@@ -163,7 +163,7 @@ public class DeathLinkHandler
     }
 
     /// <summary>
-    /// what happens when we receive a deathLink
+    /// what happens when the player receives a deathLink
     /// </summary>
     /// <param name="deathLink">Received Death Link object to handle</param>
     private void DeathLinkReceived(DeathLink deathLink)
@@ -334,7 +334,7 @@ public class DeathLinkHandler
     {
         try
         {
-            // The death we caused ourselves, coming back around. Consumed rather than merely
+            // The death the player caused themselves, coming back around. Consumed rather than merely
             // tested, so the next real death is shared normally.
             if (suppressNextDeath)
             {

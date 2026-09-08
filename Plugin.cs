@@ -31,8 +31,8 @@ namespace Straftapelago.Finnegan_McD.org;
 //
 // ChatCommands is required because it IS the Archipelago console: its command registry carries
 // the !commands the player types, and its chat printer is where the room's replies appear.
-// Being a hard dependency also fixes load order in our favour - BepInEx runs a dependency's
-// Awake before ours, so its registry exists by the time we add commands to it in Awake.
+// Being a hard dependency also fixes load order in my favour as BepInEx runs a dependency's
+// Awake before this one, so its registry exists by the time the mod adds commands to it in Awake.
 [BepInDependency(MyceliumDependencyGUID)]
 [BepInDependency(ModMenuDependencyGUID)]
 [BepInDependency(ChatCommandsDependencyGUID)]
@@ -47,12 +47,7 @@ public class Plugin : BaseUnityPlugin
 
     // The mod's display name, and ONLY that: it is what BepInPlugin hands Mod Menu, which shows
     // it on the mod list and on this mod's tab (ModMenuManager.Init reads Metadata.Name; the API
-    // can override the icon and the description but not this). Deliberately unlike the GUID
-    // above and the assembly name in the csproj, both of which stay
-    // Straftapelago.Finnegan_McD.org - the GUID keys the .cfg filename, Mod Menu's builder and
-    // icon registries and every BepInDependency anyone writes against this mod, and the assembly
-    // name keys the embedded resource paths and build.ps1's deploy. Changing either to match
-    // this would break those; they are not the same string by design.
+    // can override the icon and the description but not this).
     public const string PluginName = "Straftipelago";
 
     public const string PluginVersion = "1.0.0";
@@ -62,9 +57,9 @@ public class Plugin : BaseUnityPlugin
     public static ArchipelagoClient ArchipelagoClient;
     public static GameObject RouletteItemPrefab;
 
-    // The local player's roulette pools. Created once in Awake and never replaced, so every
-    // patch that needs it - pickupPatches for the roll and the pickup rules, killDetectPatches
-    // for the first-kill checks - reads it from here.
+    // The local player's roulette pools. Created once in Awake and never replaced, because every
+    // patch that needs it. pickupPatches needs it for the roll and the pickup rules, killDetectPatches
+    // for the first-kill checks.
     //
     // A plain C# object, not a MonoBehaviour: a UnityEngine.Object would need
     // DontDestroyOnLoad to survive a scene change, while this is simply never collected while
@@ -119,7 +114,7 @@ public class Plugin : BaseUnityPlugin
 
             // Plugin startup logic
             BepinLogger = Logger;
-            BepinLogger.LogInfo("Mod Started - this is the print statement");
+            BepinLogger.LogInfo("Straftapelago plugin loading.");
 
             // First thing after the logger: this binds the config, which creates/updates
             // BepInEx/config/org.Finnegan_McD.Straftapelago.cfg, and every later step here
@@ -237,10 +232,8 @@ public class Plugin : BaseUnityPlugin
 
             // Separate from PatchAll, and guarded, because these targets are
             // discovered by searching the game's IL rather than named in an
-            // attribute: there are dozens of them, and PatchAll is all-or-nothing
-            // - one method Harmony cannot patch would throw out of here and leave
-            // the whole mod half-loaded. Installed one at a time instead, so a bad
-            // target costs only the kill-feed detail it would have provided.
+            // attribute: if one of these fails it is not truely the end of the world,
+            // so I allow it to be seperate from the rest.
             try
             {
                 SuicideScopes.Install(harmony);
@@ -250,7 +243,7 @@ public class Plugin : BaseUnityPlugin
                 BepinLogger.LogError($"Failed to install suicide-detection scopes: {error}");
             }
 
-            // Must be a GameObject we own; this plugin component is destroyed on
+            // Must be a GameObject the mod owns; this plugin component is destroyed on
             // frame 0 along with BepInEx_Manager. See ArchipelagoOverlay.
             ArchipelagoOverlay.Install();
 
@@ -265,16 +258,7 @@ public class Plugin : BaseUnityPlugin
 
 
 
-    // This component does NOT draw the overlay - see ArchipelagoOverlay for why.
-    // In short: BepInEx's entrypoint (Application..cctor) runs before the first
-    // scene loads, and Unity resets the DontDestroyOnLoad scene when it does, so
-    // BepInEx_Manager and every plugin component on it are destroyed on frame 0.
-    // An OnGUI here would never be called even once. Harmony patches and static
-    // state are unaffected, which is why the rest of the mod works regardless.
-    //
-    // Kept as a one-line breadcrumb: if a future BepInEx or Unity version stops
-    // doing this, the absence of this line in the log makes that visible instead
-    // of leaving a stale workaround silently in place.
+    // logs when the game destroys the BepInEx_Manager
     private void OnDestroy()
     {
         Logger.LogInfo($"[Diag:Host] BepInEx_Manager component destroyed on frame {Time.frameCount} " +

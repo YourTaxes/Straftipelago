@@ -176,7 +176,7 @@ public class ArchipelagoData
     }
 
     /// <summary>
-    /// assigns the slot data and seed to our data handler. any necessary setup using this data can be done here.
+    /// assigns the slot data and seed to my data handler. any necessary setup using this data can be done here.
     /// </summary>
     /// <param name="roomSlotData">slot data of your slot from the room</param>
     /// <param name="roomSeed">seed name of this session</param>
@@ -190,7 +190,7 @@ public class ArchipelagoData
     public void SetupSession(Dictionary<string, object> roomSlotData, string roomSeed)
     {
         // Kept, not overwritten, when the room sends nothing. A reconnect asks for slot data
-        // only when we have none - that is what NeedSlotData means - so the second login
+        // only when there is none - that is what NeedSlotData means - so the second login
         // legitimately answers null, and assigning it would throw away the room's settings
         // while still connected to the room. Every reader below then falls back to its current
         // value, which is what makes reconnecting leave the session exactly as it was.

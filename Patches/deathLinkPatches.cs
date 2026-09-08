@@ -75,7 +75,7 @@ public class PlayerHealthDeathLinkSendPatch
 /// main-thread-only Unity call. This is the same reason ArchipelagoConsole queues
 /// its lines instead of writing them where they arrive.</para>
 /// <para>A postfix, so vanilla has finished this frame's own death bookkeeping
-/// before we consider imposing a new death on top of it. Everything about WHEN a
+/// before imposing a new death on top of it. Everything about when a
 /// queued death may be spent lives in KillPlayer; this is only the pump, and the
 /// source of the local player's PlayerHealth.</para>
 /// </remarks>

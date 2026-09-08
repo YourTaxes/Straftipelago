@@ -538,7 +538,7 @@ internal static class MadeInHeaven
 
         // The activating player's own line, and their own copy of the countdown, applied here
         // rather than waiting for the broadcast to come back around. Mycelium delivers a
-        // broadcast to its sender as well, and MadeInHeavenNet drops our own copy, so this is
+        // broadcast to its sender as well, and MadeInHeavenNet drops the player's copy, so this is
         // the one and only place the local half happens.
         KillFeed.Write(FeedTag, ActivationCry);
         Begin(seconds, startTick, endTick);

@@ -123,7 +123,7 @@ public static class DiagLog
         Plugin.BepinLogger.LogInfo($"[RR:{step} #{rollId}] frame={Time.frameCount} {message}");
     }
 
-    /// <summary>Unity's == is overloaded so destroyed-but-not-collected objects report null too, which is what we want here.</summary>
+    /// <summary>Unity's == is overloaded so destroyed-but-not-collected objects report null too, which is what is wanted here.</summary>
     public static string Describe(Object o) => o == null ? "null" : o.name;
 
     public static string NetRoles() =>
@@ -208,7 +208,7 @@ public class HUDTweenStartDiagPatch
 /// Vanilla HUDTween.Update() dereferences clientScript, hudUp/hudDown, and
 /// PauseManager.Instance — the singleton is a real candidate on a joining client
 /// that has not finished setting up its UI yet, so log all of them, not just the
-/// one we suspect.
+/// one I suspect.
 /// </summary>
 [HarmonyPatch(typeof(HUDTween), "Update")]
 public class HUDTweenUpdateDiagPatch
