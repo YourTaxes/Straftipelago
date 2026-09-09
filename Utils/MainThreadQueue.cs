@@ -4,18 +4,13 @@ using System.Collections.Generic;
 namespace Straftapelago.Finnegan_McD.org.Utils;
 
 /// <summary>
-/// Holds messages produced anywhere until the main thread can display them.
+/// Holds messages produced anywhere until the main thread can display them, which is what both
+/// of the mod's message sinks need: they arrive on the Archipelago client's websocket thread or
+/// a ThreadPool thread, and displaying one instantiates a prefab. The writer returns false to
+/// mean "not ready yet, ask again later", because the chat panel and the killfeed only exist
+/// once the right scene is up and a message produced in a menu should wait rather than be
+/// dropped.
 /// </summary>
-/// <remarks>
-/// <para>Both of this mod's message sinks need the same thing. Messages arrive on threads that
-/// are not Unity's, as the Archipelago client's MessageLog callback fires on its websocket
-/// thread, and <c>HandleConnectResult</c> runs on a ThreadPool thread while displaying one
-/// Instantiates a prefab, and every Unity API involved is main-thread-only. So a message
-/// cannot be written where it is produced.</para>
-/// <para>The writer returns false to mean "not ready yet, ask again later" rather than
-/// throwing: the chat panel and the killfeed both only exist once the right scene is up, and
-/// a message produced in a menu should wait rather than be dropped.</para>
-/// </remarks>
 internal sealed class MainThreadQueue
 {
     /// <summary>

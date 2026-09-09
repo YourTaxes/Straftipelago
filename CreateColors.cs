@@ -2,6 +2,10 @@ using UnityEngine;
 
 namespace Straftapelago.Finnegan_McD.org;
 
+/// <summary>
+/// Paints the Roulette Item's renderers, one colour per name prefix, through the game's own
+/// weapon outline shader.
+/// </summary>
 public static class CreateColors
 {
     private static readonly Color[] Colors = new Color[]

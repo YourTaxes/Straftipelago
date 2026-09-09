@@ -10,37 +10,12 @@ using UnityEngine;
 namespace Straftapelago.Finnegan_McD.org.Utils;
 
 /// <summary>
-/// Carries a roulette roll from the player who made it to the host, and the resulting
-/// weapon's object id back again. Nothing else is ever sent — a peer's unlocked-weapon pool
-/// stays entirely on its own machine.
+/// Carries a roulette roll from the player who made it to the host, and the resulting weapon's
+/// object id back again, over Mycelium's Steam-P2P RPCs. Nothing else is ever sent - a peer's
+/// unlocked-weapon pool stays entirely on its own machine. Mycelium is used because a client
+/// may only invoke a ServerRpc on a NetworkObject it owns, and no vanilla ServerRpc that spawns
+/// an arbitrary prefab lives on anything a client owns.
 /// </summary>
-/// <remarks>
-/// <para>Why this is not done with the game's own RPCs. The requirement was to use vanilla
-/// networking wherever possible, and the game does contain exactly the right shape:
-/// <c>PlayerSpawnObject.SpawnObject</c> is a ServerRpc whose server body Instantiates,
-/// <c>ServerManager.Spawn</c>s and answers the caller — and FishNet even serializes an
-/// unspawned prefab by <c>PrefabId</c>, so a weapon prefab can be handed over by reference.
-/// The catch is ownership: a client may only invoke a ServerRpc on a NetworkObject it owns,
-/// and a runtime probe proved <c>PlayerSpawnObject</c> is <b>not a component on the player
-/// prefab</b> (see the G1 line in PlayerPickupOnStartClientDiagPatch). Of every vanilla
-/// ServerRpc that spawns an arbitrary prefab, none lives on anything a client owns:</para>
-/// <list type="bullet">
-/// <item><c>PlayerSpawnObject.SpawnObject</c> — the component does not exist on the player.</item>
-/// <item><c>WeaponHandSpawner.SpawnObject</c> — only on the placeable mine/claymore weapons.</item>
-/// <item><c>ItemDispenser.SpawnWeapon</c> — no ownership guard, so a client *can* call it, but
-/// it spawns at the dispenser rather than at the player, needs a dispenser on the map, and
-/// drags dispenser side effects along. Rejected as too fragile.</item>
-/// </list>
-/// <para>So the vanilla mechanism exists but is unreachable, and this uses Mycelium instead —
-/// the same Steam-P2P RPC library several other STRAFTAT mods already depend on. It is a hard
-/// dependency, declared on <see cref="Plugin"/>.</para>
-/// <para>The remaining pure-vanilla option, if the dependency is ever unwanted: bind a
-/// <c>WeaponHandSpawner</c> component onto the Roulette Item prefab in the asset bundle, the
-/// same way <c>Gun</c> is already bound. The roulette is owned by whoever picked it up
-/// (<c>PlayerPickup.HandleInteraction</c> calls the <c>GiveOwnerToObj</c> ServerRpc), so its
-/// <c>SpawnObject(prefab, position, rotation)</c> would then be callable and would take a
-/// spawn position directly. That needs a rebuild of the bundle in Unity, which this does not.</para>
-/// </remarks>
 internal class RouletteNet
 {
     /// <summary>
@@ -92,9 +67,9 @@ internal class RouletteNet
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Runs on the host. Resolves the requesting player, spawns the one weapon they rolled,
-    /// and tells them its object id. The host never learns anything about that player's pool
-    /// beyond this single weapon.
+    /// Runs on the host. Resolves the requesting player, spawns the one weapon they rolled, and
+    /// tells them its object id. The host never learns anything about that player's pool beyond
+    /// this single weapon.
     /// </summary>
     [CustomRPC]
     public void ServerSpawnRolledWeapon(int rollId, string weaponName, bool rightHand, RPCInfo info)
@@ -108,16 +83,15 @@ internal class RouletteNet
             }
 
             PlayerPickup pp = ResolvePickup(info.SenderSteamID.m_SteamID, out string who);
-            // Name resolution ONLY, never a pool-membership test: this is the host answering
-            // for someone else's roll, and the host's own lists say nothing about what that
-            // player has unlocked.
+            // Name resolution ONLY, never a pool-membership test: this is the host answering for
+            // someone else's roll, and the host's own lists say nothing about what that player
+            // has unlocked.
             GameObject prefab = Plugin.RouletteState?.Lookup(weaponName);
             NetworkObject prefabNob = prefab == null ? null : prefab.GetComponent<NetworkObject>();
 
             // prefabId is logged here and on the requester's [RR:roll] line so the two can be
-            // diffed across the two machines' logs. Under Mycelium the weapon travels as a
-            // NAME rather than a FishNet PrefabId, so a mismatch here means the peers disagree
-            // about the weapon list itself, not about the spawnable-prefab table.
+            // diffed across the two machines' logs. The weapon travels as a NAME, so a mismatch
+            // means the peers disagree about the weapon list itself.
             DiagLog.Log("RR:server-spawn",
                 $"#{rollId} requestedBy={info.SenderSteamID} resolvedPlayer={who} " +
                 $"weaponName={weaponName} resolvedPrefab={DiagLog.Describe(prefab)} " +
@@ -131,9 +105,8 @@ internal class RouletteNet
                 player.position + player.forward * 2f, Quaternion.identity);
 
             // Ownership goes to the requesting client, matching what the game does for any
-            // picked-up item (PlayerPickup.HandleInteraction -> GiveOwnerToObj) and what
-            // WeaponHandSpawner does for a placed one. Without it the weapon's own ServerRpcs
-            // (RemoveAmmo, KillServer) would be called by a client that does not own it.
+            // picked-up item. Without it the weapon's own ServerRpcs (RemoveAmmo, KillServer)
+            // would be called by a client that does not own it.
             FishNet.InstanceFinder.ServerManager.Spawn(spawned, pp.Owner);
 
             NetworkObject spawnedNob = spawned.GetComponent<NetworkObject>();
@@ -245,10 +218,8 @@ internal class RouletteNet
         int rollId, int objectId, bool rightHand, PlayerPickup pp, ItemBehaviour roulette)
     {
         // Always give up at least one frame first. On the host, Mycelium delivers a message
-        // addressed to itself synchronously (SendBytes short-circuits when the target is the
-        // local Steam id), so without this yield the request, the spawn, the reply and the
-        // equip would all run INSIDE ItemBehaviour.OnGrab — putting back exactly the reentrant
-        // swap this design removed, and with it the need for the LeftHandPickup override.
+        // addressed to itself synchronously, so without this yield the request, the spawn, the
+        // reply and the equip would all run inside ItemBehaviour.OnGrab.
         yield return null;
 
         GameObject spawned = null;
@@ -305,9 +276,9 @@ internal class RouletteNet
 
     /// <summary>
     /// A MonoBehaviour to hang the wait coroutine off. Created lazily, on first use, which is
-    /// always well after frame 0 — a GameObject made any earlier would be destroyed by Unity's
-    /// DontDestroyOnLoad reset when the first scene loads (the same trap documented on
-    /// <see cref="ArchipelagoOverlay"/>).
+    /// always well after frame 0: a GameObject made any earlier would be destroyed by Unity's
+    /// DontDestroyOnLoad reset when the first scene loads, the same way
+    /// <see cref="ArchipelagoOverlay"/>'s host is.
     /// </summary>
     private static CoroutineRunner Runner()
     {

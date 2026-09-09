@@ -5,14 +5,11 @@ using Straftapelago.Finnegan_McD.org.Patches;
 namespace Straftapelago.Finnegan_McD.org.Archipelago;
 
 /// <summary>
-/// What became of a check the mod tried to hand to the room.
+/// What became of a check the mod tried to hand to the room. A return value rather than a
+/// thrown exception, because the two callers want opposite things from a failure:
+/// <see cref="RouletteState.RecordKill"/> is on the kill path and must swallow it, while
+/// /ap_completecheck has to tell the player why nothing happened.
 /// </summary>
-/// <remarks>
-/// A return value rather than a thrown exception because the two callers want opposite
-/// things from a failure: <see cref="RouletteState.RecordKill"/> is on the kill path and
-/// must swallow it, while /ap_completecheck is a command the player typed and has to tell
-/// them why nothing happened.
-/// </remarks>
 public enum LocationSendResult
 {
     /// <summary>The check went to the room.</summary>
@@ -33,32 +30,21 @@ public enum LocationSendResult
 
 /// <summary>
 /// Where a completed check leaves this mod for the Archipelago room.
+/// <see cref="RouletteState.RecordKill"/> decides when a check is earned; this decides what that
+/// means to the room. The apworld gives every weapon one location named after it, so the
+/// translation is two steps: the weapon's name to the spelling the apworld uses
+/// (<see cref="LocationNameFor"/>), and that name to an id
+/// (<see cref="ArchipelagoClient.ResolveLocationId"/>).
 /// </summary>
-/// <remarks>
-/// <see cref="RouletteState.RecordKill"/> decides WHEN a check is earned (the first kill with
-/// a weapon the player has unlocked, suicides excluded); this decides what that means to the
-/// room. The Straftat apworld gives every weapon one location named after the weapon, so the
-/// translation is two steps: the weapon's name to the spelling the apworld uses, which
-/// <see cref="LocationNameFor"/> does, and that name to an id, which
-/// <see cref="ArchipelagoClient.ResolveLocationId"/> does.
-/// </remarks>
 public static class LocationSender
 {
     /// <summary>
-    /// The name the room knows a weapon by.
+    /// The name the room knows a weapon by. The apworld's LOCATION_NAME_TO_ID is keyed on the
+    /// game's PREFAB names - "AK-K", "Nugget", "DF_Blister" - several of which are nothing like
+    /// what the game displays, so anything the pool can resolve goes out under its prefab's
+    /// name. A name the pool cannot resolve is passed through untouched, since the pool is empty
+    /// until a player object has come up and ResolveLocationId is the better judge.
     /// </summary>
-    /// <remarks>
-    /// The apworld's LOCATION_NAME_TO_ID is keyed on the game's PREFAB names - "AK-K",
-    /// "Nugget", "DF_Blister" - and several of those are nothing like what the game displays
-    /// for the same weapon ("ak", "serac"). Sending what the player sees is what made
-    /// /ap_completecheck ak report that the room had no such location: it is called "AK-K"
-    /// there. Anything the pool can resolve therefore goes out under its prefab's name, which
-    /// is the one spelling both halves agree on.
-    ///
-    /// A name the pool cannot resolve is passed through untouched rather than refused here -
-    /// the pool is empty until a player object has come up, and ResolveLocationId is a better
-    /// judge of what the room has than a pool that may not be built yet.
-    /// </remarks>
     private static string LocationNameFor(string weaponName)
     {
         GameObject prefab = Plugin.RouletteState?.ResolveByAnyName(weaponName);
@@ -93,14 +79,11 @@ public static class LocationSender
     }
 
     /// <summary>
-    /// Sends one check by the name the room knows it under, whatever earned it.
+    /// Sends one check by the name the room knows it under, whatever earned it. A name reaching
+    /// here is already in the apworld's spelling - which is what lets the Round_N checks skip
+    /// the weapon-pool lookup in <see cref="LocationNameFor"/> - so the only translation left is
+    /// the id.
     /// </summary>
-    /// <remarks>
-    /// Split out of <see cref="Send_Location"/> so that a check which is not a weapon - the
-    /// Round_N round-win checks - does not have to go through <see cref="LocationNameFor"/>, a
-    /// weapon-pool lookup that could only ever fail to resolve it. A name reaching here is already
-    /// in the apworld's spelling; the only translation left is the id.
-    /// </remarks>
     /// <param name="locationName">The location's name as the apworld spells it.</param>
     /// <param name="earnedBy">
     /// What earned the check, for the log lines. Free text - "first kill with 'AK-K'", "round 3
@@ -124,10 +107,9 @@ public static class LocationSender
             long locationId = client.ResolveLocationId(locationName);
             if (locationId < 0)
             {
-                // The mod and the apworld disagree about a name. Worth a loud line: it means that
-                // check can never be sent, and no amount of playing will fix it. The name is
-                // printed because the fix is to make the apworld's LOCATION_NAME_TO_ID agree with
-                // whatever this mod sends.
+                // The mod and the apworld disagree about a name, so that check can never be
+                // sent. The name is printed because the fix is to make the apworld's
+                // LOCATION_NAME_TO_ID agree with what the mod sends.
                 Plugin.BepinLogger.LogWarning(
                     $"[Archipelago] the room has no location named '{locationName}', so the check " +
                     $"for {earnedBy} cannot be sent. This mod and the apworld disagree about the " +

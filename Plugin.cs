@@ -20,19 +20,11 @@ namespace Straftapelago.Finnegan_McD.org;
 
 
 
-// Mycelium carries the roulette roll from the player who made it to the host. It is required,
-// not optional: without it a picked-up Roulette Item rolls a weapon and then has no way to ask
-// the server to spawn it. See RouletteNet for why the game's own RPCs cannot do this.
-//
-// Mod Menu is required for the same kind of reason: it hosts this mod's only login UI (see
-// ArchipelagoMenu, which replaced the IMGUI connect form), so without it there is no way to
-// reach an Archipelago room at all. A hard dependency makes that a single explanatory line in
-// the chainloader log rather than a mod that loads and then silently cannot connect.
-//
-// ChatCommands is required because it IS the Archipelago console: its command registry carries
-// the !commands the player types, and its chat printer is where the room's replies appear.
-// Being a hard dependency also fixes load order in my favour as BepInEx runs a dependency's
-// Awake before this one, so its registry exists by the time the mod adds commands to it in Awake.
+// All three dependencies are hard, because the mod cannot work without any of them: Mycelium
+// carries the roulette roll to the host, Mod Menu hosts the only login UI, and ChatCommands is
+// the Archipelago console itself. Declaring them also fixes load order, since BepInEx runs a
+// dependency's Awake before this one - so ChatCommands' registry exists by the time this mod
+// adds commands to it.
 [BepInDependency(MyceliumDependencyGUID)]
 [BepInDependency(ModMenuDependencyGUID)]
 [BepInDependency(ChatCommandsDependencyGUID)]
@@ -45,9 +37,9 @@ public class Plugin : BaseUnityPlugin
 
     public const string PluginGUID = "org.Finnegan_McD.Straftapelago";
 
-    // The mod's display name, and ONLY that: it is what BepInPlugin hands Mod Menu, which shows
-    // it on the mod list and on this mod's tab (ModMenuManager.Init reads Metadata.Name; the API
-    // can override the icon and the description but not this).
+    // The mod's display name, and only that: BepInPlugin hands it to Mod Menu, which shows it on
+    // the mod list and on this mod's tab. The Mod Menu API can override the icon and the
+    // description but not this.
     public const string PluginName = "Straftipelago";
 
     public const string PluginVersion = "1.0.0";
@@ -57,13 +49,10 @@ public class Plugin : BaseUnityPlugin
     public static ArchipelagoClient ArchipelagoClient;
     public static GameObject RouletteItemPrefab;
 
-    // The local player's roulette pools. Created once in Awake and never replaced, because every
-    // patch that needs it. pickupPatches needs it for the roll and the pickup rules, killDetectPatches
-    // for the first-kill checks.
-    //
-    // A plain C# object, not a MonoBehaviour: a UnityEngine.Object would need
-    // DontDestroyOnLoad to survive a scene change, while this is simply never collected while
-    // this static holds it. It has no per-frame work, so a component would buy nothing.
+    // The local player's roulette pools, created once in Awake and never replaced: the roulette
+    // patches read it for the roll and the pickup rules, kill detection for the first-kill
+    // checks. A plain C# object rather than a MonoBehaviour, since it has no per-frame work and
+    // a static reference keeps it alive across scene changes on its own.
     public static RouletteState RouletteState;
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -79,14 +68,12 @@ public class Plugin : BaseUnityPlugin
     private const uint ENABLE_QUICK_EDIT_MODE = 0x0040;
     private const uint ENABLE_EXTENDED_FLAGS = 0x0080;
 
-    // BepInEx's console (and vanilla Debug.Log/print, which it also captures) writes to
-    // CONIN$/STD_INPUT_HANDLE's underlying console window. Windows consoles default to
-    // QuickEdit Mode, which suspends the whole process's writes to that console the moment
-    // the window is focused/clicked into selection state, until Enter/Esc is pressed or the
-    // selection is cancelled — since Unity's game loop runs on the same thread doing the
-    // logging, that write blocking freezes the entire game. Clearing the flag here (with
-    // ENABLE_EXTENDED_FLAGS set, which Windows requires to be present for the QuickEdit bit
-    // to take effect at all) prevents that hang for the lifetime of the console window.
+    // Windows consoles default to QuickEdit Mode, which suspends the process's writes to the
+    // console the moment the window is clicked into a selection - and since Unity's game loop is
+    // the thread doing the logging, that freezes the whole game until the selection is
+    // cancelled. Clearing the flag prevents that for the lifetime of the console window.
+    // ENABLE_EXTENDED_FLAGS has to be set for the QuickEdit bit to take effect at all. Nothing
+    // calls this at the moment; Awake is where it belongs when it is wanted.
     private static void DisableQuickEdit()
     {
         IntPtr handle = GetStdHandle(STD_INPUT_HANDLE);
@@ -100,26 +87,18 @@ public class Plugin : BaseUnityPlugin
 
     private void Awake()
     {
-        // Unity swallows nothing here, but BepInEx only surfaces a failed Awake() as a
-        // terse chainloader line — and a partially-initialized plugin then fails in
-        // confusing ways later (OnGUI drawing against a null ArchipelagoClient, patches
-        // never applied, etc). Catch and log the whole thing so a load failure is
-        // obvious in LogOutput.log instead of silent. Logged via the inherited `Logger`
-        // rather than the static BepinLogger field, so a throw that happens before (or
-        // during) `BepinLogger = Logger;` still gets reported instead of being masked by
-        // a secondary NullReferenceException.
+        // BepInEx only surfaces a failed Awake as a terse chainloader line, and a partly
+        // initialized plugin then fails in confusing ways later, so the whole thing is caught
+        // and logged here. Through the inherited `Logger` rather than the static BepinLogger
+        // field, so a throw before that field is assigned still gets reported.
         try
         {
-            //DisableQuickEdit();
-
-            // Plugin startup logic
             BepinLogger = Logger;
             BepinLogger.LogInfo("Straftapelago plugin loading.");
 
-            // First thing after the logger: this binds the config, which creates/updates
-            // BepInEx/config/org.Finnegan_McD.Straftapelago.cfg, and every later step here
-            // (and every patch) may read an entry, so nothing may run before it. Once only:
-            // Mod Menu's RegisterContentBuilder throws on a second call from this assembly.
+            // First thing after the logger: this binds the config, and every later step here -
+            // and every patch - may read an entry. Once only, as Mod Menu's
+            // RegisterContentBuilder throws on a second call from this assembly.
             try
             {
                 ArchipelagoMenu.Install(Config);
@@ -129,10 +108,9 @@ public class Plugin : BaseUnityPlugin
                 BepinLogger.LogError($"Failed to register the Mod Menu page: {e}");
             }
 
-            // After the config (Roll() reads New Weapon Chance) and before PatchAll, so no
-            // patch can ever observe this as null. The constructor only allocates the lists -
-            // the weapons themselves are filled in lazily on the first PlayerPickup.Awake,
-            // because SpawnerManager is not up this early. See RouletteState.EnsureInitialized.
+            // After the config, which Roll reads, and before PatchAll, so no patch can observe
+            // this as null. The constructor only allocates the lists: the weapons are filled in
+            // on the first PlayerPickup.Awake, because SpawnerManager is not up this early.
             try
             {
                 RouletteState = new RouletteState();
@@ -204,9 +182,8 @@ public class Plugin : BaseUnityPlugin
                 BepinLogger.LogError($"Failed to register roulette RPCs with Mycelium: {e}");
             }
 
-            // Its own try/catch and its own registration, on the same Mycelium mod id: a Made in
-            // Heaven has to reach the rest of the lobby, and losing that must not also cost the
-            // roulette its own RPCs (or the other way round).
+            // Its own try/catch and its own registration, on the same Mycelium mod id, so losing
+            // one of the two sets of RPCs does not cost the other.
             try
             {
                 MadeInHeavenNet.Install();
@@ -230,10 +207,9 @@ public class Plugin : BaseUnityPlugin
             Harmony harmony = new Harmony(PluginGUID);
             harmony.PatchAll();
 
-            // Separate from PatchAll, and guarded, because these targets are
-            // discovered by searching the game's IL rather than named in an
-            // attribute: if one of these fails it is not truely the end of the world,
-            // so I allow it to be seperate from the rest.
+            // Separate from PatchAll, and guarded, because these targets are discovered by
+            // searching the game's IL rather than named in an attribute: one that fails to
+            // patch must not take the rest of the mod's initialization with it.
             try
             {
                 SuicideScopes.Install(harmony);
@@ -258,7 +234,7 @@ public class Plugin : BaseUnityPlugin
 
 
 
-    // logs when the game destroys the BepInEx_Manager
+    // Logs when the game destroys the BepInEx_Manager this component lives on.
     private void OnDestroy()
     {
         Logger.LogInfo($"[Diag:Host] BepInEx_Manager component destroyed on frame {Time.frameCount} " +

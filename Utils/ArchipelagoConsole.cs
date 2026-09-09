@@ -8,16 +8,11 @@ namespace Straftapelago.Finnegan_McD.org.Utils;
 /// <summary>
 /// The Archipelago console. Everything the room says, and everything this mod says about the
 /// connection, is written into the game's chat.
+/// Printed through <c>ChatCommands.ChatPatches.SendSystemMessage</c>, the same call its
+/// Evaluator uses for command output, so a line from the room looks like the output of
+/// <c>/help</c> and lands in the same chat log. The other half of the console, the commands the
+/// player types, is <see cref="Archipelago.ArchipelagoChatCommands"/>.
 /// </summary>
-/// <remarks>
-/// <para>Printed through <c>ChatCommands.ChatPatches.SendSystemMessage</c>, the same call its
-/// Evaluator uses to show the output of a command - so a line from the Archipelago room looks
-/// exactly like the output of <c>/help</c>, and lands in the same chat log. The other half of
-/// the console, the commands the player types, is <see cref="ArchipelagoChatCommands"/>.</para>
-/// <para>This class was once an IMGUI window drawn by <see cref="ArchipelagoOverlay"/>, and
-/// then a router into the killfeed. Only <see cref="LogMessage"/> survives both moves, because
-/// it is what the rest of the mod calls.</para>
-/// </remarks>
 public static class ArchipelagoConsole
 {
     private static readonly MainThreadQueue Queue = new(TryWriteToChat, "Console");
@@ -52,15 +47,11 @@ public static class ArchipelagoConsole
     }
 
     /// <summary>
-    /// Whether ChatCommands has captured the chat panel it prints into.
+    /// Whether ChatCommands has captured the chat panel it prints into. Its printer reads the
+    /// message prefab from statics filled in by its own postfix on LobbyChatUILogic.Start, so
+    /// before that scene is up printing would throw - and being on the menu is normal, so this
+    /// is checked rather than caught.
     /// </summary>
-    /// <remarks>
-    /// Its printer takes the message prefab and the transform to parent it under from statics
-    /// filled in by its own postfix on <c>LobbyChatUILogic.Start</c>, so before that scene is
-    /// up they are null and printing would throw. Checked rather than caught, because "not in
-    /// a match yet" is the normal state on the menu screen and would otherwise throw an
-    /// exception per queued message per frame.
-    /// </remarks>
     private static bool ChatReady()
     {
         try

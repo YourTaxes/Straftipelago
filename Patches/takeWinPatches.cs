@@ -8,23 +8,12 @@ namespace Straftapelago.Finnegan_McD.org.Patches;
 
 /// <summary>
 /// How many takes - and how many rounds - the local player's team has won since the game was
-/// launched.
+/// launched. Vanilla keeps no such number: a take is one fight, a round is
+/// first-to-RoundScoreRequiredToWin takes, and the per-take score is cleared the moment a round
+/// is won. So this counts them off the one signal every client gets per take, the
+/// UpdateMatchPointsHUD ObserversRpc, by snapshotting and diffing the round-score table - that
+/// RPC's team argument is the ROUND winner, not the take winner.
 /// </summary>
-/// <remarks>
-/// <para>Vanilla keeps no such number. A "take" is one fight - the game logs "X won the take"
-/// when a team is the last one standing and calls <c>ScoreManager.AddRoundScore</c> - while a
-/// "round" is first-to-<c>RoundScoreRequiredToWin</c> takes, which is the thing that ends with
-/// the scoreboard screen and a map change. The per-take score lives in the
-/// <c>ScoreManager.RoundScore</c> SyncDictionary and is CLEARED the moment a round is won
-/// (<c>ScoreManager.ResetRound</c>), so nothing in the game accumulates takes across a session.
-/// <c>Settings.IncreaseRoundsWon</c> is not it either: that counts rounds, and is only reached
-/// from the end-of-round scoreboard.</para>
-/// <para>So this counts them itself, off the one signal every client gets per take: the
-/// <c>UpdateMatchPointsHUD</c> ObserversRpc, which the server sends once per resolved take with
-/// the whole round-score table, before it resets anything. Snapshot-and-diff rather than
-/// "was I the winner", because that RPC's team argument is the ROUND winner (-1 until someone
-/// takes the round), not the take winner.</para>
-/// </remarks>
 internal static class TakeTracker
 {
     /// <summary>Takes the local player's team has won this session.</summary>
@@ -32,14 +21,9 @@ internal static class TakeTracker
 
     /// <summary>
     /// Rounds the local player's team has won this session - the first-to-N-takes wins, each of
-    /// which ends with the scoreboard screen and a new map.
+    /// which ends with the scoreboard screen and a new map. No snapshot is involved: the RPC's
+    /// own team argument is the round winner, and is -1 on every take that did not end one.
     /// </summary>
-    /// <remarks>
-    /// Free, unlike the takes: the RPC's own team argument IS the round winner, and is -1 on
-    /// every take that did not end a round, so no snapshot is involved. Kept in this class
-    /// because it is the same session-long, memory-only span as <see cref="TakesWon"/> -
-    /// counted from process start, gone when the game closes.
-    /// </remarks>
     internal static int RoundsWon { get; private set; }
 
     /// <summary>
@@ -55,30 +39,21 @@ internal static class TakeTracker
     private const int NoTeam = int.MinValue;
 
     /// <summary>
-    /// Drops the snapshot on every scene load.
+    /// Drops the snapshot on every scene load, since a new map means the round scores started
+    /// over at zero. The decrease test in <see cref="Observe"/> covers that on its own except
+    /// where a single take wins the round: the snapshot and the next map's first take both read
+    /// 1, which is no decrease and would swallow the win.
     /// </summary>
-    /// <remarks>
-    /// A round win is followed by <c>SceneMotor.ChangeNetworkScene</c>, so a new map means the
-    /// round scores started over at zero. The decrease test in <see cref="Observe"/> catches
-    /// that on its own in every case but one: a room where a single take wins the round leaves
-    /// the snapshot at 1 and the first take of the next map also reports 1, which is no decrease
-    /// and would swallow the win. Clearing here removes that hole rather than betting on the
-    /// room's RoundScoreRequiredToWin being greater than one.
-    /// </remarks>
     internal static void Install()
     {
         SceneManager.sceneLoaded += (scene, mode) => lastSeenRoundScores.Clear();
     }
 
     /// <summary>
-    /// Judges one resolved take from the round-score table the server just broadcast.
+    /// Judges one resolved take from the round-score table the server just broadcast. At most
+    /// one take is credited per call, which is what stops a player who joins a match in progress
+    /// and inherits a team's existing points from being handed them as wins.
     /// </summary>
-    /// <remarks>
-    /// At most one take is credited per call, whatever the arithmetic says. A team's score can
-    /// only ever go up by one per take, so the clamp costs nothing in normal play and is what
-    /// stops a player who joins a match in progress - and inherits a team that already has
-    /// points - from being handed those points as if they had won them.
-    /// </remarks>
     /// <param name="roundWinnerTeamId">
     /// The team that just won the ROUND, or -1 when this take did not end one.
     /// </param>
@@ -125,14 +100,10 @@ internal static class TakeTracker
     }
 
     /// <summary>
-    /// Sends the check for the round that was just won, if the room has one for it.
+    /// Sends the check for the round that was just won, if the room has one for it. Capped at
+    /// the room's round_checks, past which there is no location to send. RoundsWon itself keeps
+    /// counting past the cap, and the overlay shows it against the cap.
     /// </summary>
-    /// <remarks>
-    /// Capped at the room's round_checks, which is how many Round_N locations the apworld created.
-    /// Past that there is simply no location to send, and asking anyway would log "the room has no
-    /// location named Round_31" once per round for the rest of the session. RoundsWon itself keeps
-    /// counting past the cap - it is the honest number, and the overlay shows it against the cap.
-    /// </remarks>
     private static void SendRoundCheck()
     {
         ArchipelagoData serverData = ArchipelagoClient.ServerData;
@@ -152,18 +123,10 @@ internal static class TakeTracker
     }
 
     /// <summary>
-    /// Sets <see cref="RoundsWon"/> to the highest round check the room already has for this slot.
+    /// Sets <see cref="RoundsWon"/> to the highest round check the room already has for this
+    /// slot, so a reconnect carries on from there instead of re-sending Round_1. The highest
+    /// rather than the count, because that is what the next send has to follow.
     /// </summary>
-    /// <remarks>
-    /// The room is the record, the same way it is for first kills (see
-    /// RouletteState.ReplayEarnedKills). Without this a reconnect would start counting from zero
-    /// and re-send Round_1 on the next round win, and the player's real progress would be stuck
-    /// behind checks the room already has.
-    ///
-    /// The highest rather than the count, because that is what the next send has to follow. The
-    /// two only differ if a check went missing, and resuming after the gap is better than sending
-    /// a location the room already recorded.
-    /// </remarks>
     internal static void SeedRoundsWonFromRoom()
     {
         int highest = 0;
@@ -198,12 +161,12 @@ internal static class TakeTracker
         return false;
     }
 
-    /// <summary>The team the local player is on, or <see cref="NoTeam"/> if that is not up yet.</summary>
-    /// <remarks>
-    /// The SyncDictionary is read directly rather than through <c>ScoreManager.GetTeamId</c>:
-    /// that helper WRITES a default team through SetTeamId for a player it does not know, which
-    /// is a server-only mutation, and this runs on every client.
-    /// </remarks>
+    /// <summary>
+    /// The team the local player is on, or <see cref="NoTeam"/> if that is not up yet. The
+    /// SyncDictionary is read directly rather than through ScoreManager.GetTeamId, because that
+    /// helper writes a default team for a player it does not know, which is a server-only
+    /// mutation, and this runs on every client.
+    /// </summary>
     private static int LocalTeamId()
     {
         ClientInstance client = ClientInstance.Instance;
@@ -217,16 +180,10 @@ internal static class TakeTracker
 }
 
 /// <summary>
-/// The per-take hook. See <see cref="TakeTracker"/> for why this RPC is the one being watched.
+/// The per-take hook. The weaver-generated RpcLogic method rather than UpdateMatchPointsHUD
+/// itself, because on a receiving client the public method is only the writer and its body never
+/// runs; this also covers the host, whose own client connection observes the RPC like any other.
 /// </summary>
-/// <remarks>
-/// The weaver-generated RpcLogic method rather than <c>UpdateMatchPointsHUD</c> itself: on a
-/// receiving client the public method is only the writer, and its body never runs. Patching the
-/// logic method also keeps this working on the host, whose own client connection is an observer
-/// of the RPC like any other. Note that vanilla's RpcLogic bails out before touching the HUD
-/// when the local player object is missing, so the HUD component is NOT a safe place to hook -
-/// this postfix runs either way.
-/// </remarks>
 [HarmonyPatch(typeof(GameManager), "RpcLogic___UpdateMatchPointsHUD_1259646723")]
 public class MatchPointsHudPatch
 {

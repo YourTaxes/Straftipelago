@@ -4,26 +4,19 @@ using System.Collections.Generic;
 namespace Straftapelago.Finnegan_McD.org.Utils;
 
 /// <summary>
-/// Holds work produced off Unity's thread until the main thread can run it.
+/// Holds work produced off Unity's thread until the main thread can run it. Slot data is read
+/// on a ThreadPool thread and items arrive on the Archipelago client's websocket thread, while
+/// acting on either is main-thread-only: applying Green Mode walks the scene, rebuilding the
+/// roulette pool reads SpawnerManager. Separate from <see cref="MainThreadQueue"/>, which holds
+/// strings for a writer that can answer "not ready yet" and trickles them so chat lines do not
+/// scroll off screen; a one-shot action runs once and has nothing to fade.
 /// </summary>
-/// <remarks>
-/// <para>The Archipelago client decides things on threads that are not Unity's, slot data is
-/// read in <c>HandleConnectResult</c> on a ThreadPool thread, and items arrive on the client's
-/// websocket thread, while acting on either of them is main-thread-only. Applying Green Mode
-/// touches <c>Object.FindObjectsOfType</c> and instantiates a killfeed line; rebuilding the
-/// roulette pool reads <c>SpawnerManager</c>. So the decision and the action have to be split.</para>
-/// <para>Deliberately not <see cref="MainThreadQueue"/>: that one holds strings, hands each to a
-/// writer that may answer "not ready, ask me later", and trickles at most three per frame so
-/// chat lines do not scroll off screen. None of that applies to a one-shot action, which runs
-/// once, cannot be deferred by its own return value, and has nothing to fade.</para>
-/// </remarks>
 internal static class MainThreadActions
 {
     /// <summary>
-    /// Capped so a session that somehow never pumps cannot grow without bound. Generous next to
-    /// <see cref="MainThreadQueue"/>'s cap because the producers here are connects and item
-    /// receipts, not a chat feed - a room dumping a full starting inventory at once is the
-    /// realistic worst case.
+    /// Capped so a session that somehow never pumps cannot grow without bound. Generous, because
+    /// the producers here are connects and item receipts: a room dumping a full starting
+    /// inventory at once is the realistic worst case.
     /// </summary>
     private const int MaxPending = 256;
 
@@ -50,14 +43,10 @@ internal static class MainThreadActions
     }
 
     /// <summary>
-    /// Runs everything waiting. Must be called from the main thread - see
-    /// <see cref="ArchipelagoOverlay.Update"/>.
+    /// Runs everything waiting. Must be called from the main thread. Drains fully rather than a
+    /// few per frame: holding half a starting inventory back would let the player walk into a
+    /// match with a pool the room has already finished filling.
     /// </summary>
-    /// <remarks>
-    /// Drains fully rather than a few per frame: these are not messages competing for screen
-    /// space, and holding half a starting inventory back for later frames would let the player
-    /// walk into a match with a pool the room has already finished filling.
-    /// </remarks>
     public static void Pump()
     {
         while (true)
@@ -75,8 +64,8 @@ internal static class MainThreadActions
             }
             catch (Exception e)
             {
-                // One failed action must not stop the rest of the queue, and must not escape
-                // into the Update that is pumping us.
+                // One failed action must not stop the rest of the queue, or escape into the
+                // Update that is pumping it.
                 Plugin.BepinLogger.LogError($"[MainThreadActions] an action threw{Environment.NewLine}{e}");
             }
         }

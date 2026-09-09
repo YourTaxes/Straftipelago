@@ -3,6 +3,7 @@ using FishNet.Managing;
 using FishNet.Managing.Object;
 using FishNet.Object;
 using HarmonyLib;
+using Straftapelago.Finnegan_McD.org.Utils;
 
 namespace Straftapelago.Finnegan_McD.org.Patches;
 
@@ -13,11 +14,9 @@ namespace Straftapelago.Finnegan_McD.org.Patches;
 internal static class RoulettePrefabRegistration
 {
     /// <summary>
-    /// Idempotent: AddObject with checkForDuplicates skips a prefab already in the list, and
-    /// re-runs InitializePrefabRange either way, so calling this more often than strictly
-    /// needed costs a Contains plus one pass over the table. Only a call that actually grew
-    /// the table logs, so the backstop callers stay silent once the primary hook has done the
-    /// work.
+    /// Idempotent: AddObject with checkForDuplicates skips a prefab already in the list, so an
+    /// extra call costs a Contains plus one pass over the table. Only a call that actually grew
+    /// the table logs.
     /// </summary>
     internal static void EnsureRegistered(NetworkManager networkManager, string reason)
     {
@@ -73,11 +72,9 @@ public class NetworkManagerAwakePatch
 {
     static void Postfix(NetworkManager __instance)
     {
-        // Awake has three early returns, no SpawnablePrefabs assigned, and the two
-        // can't-persist paths that leave this instance about to be destroyed, and a postfix
-        // runs after all of them. Initialized is set true only on the path that also ran
-        // InitializePrefabRange and SetCollectionId, so it is the one flag that says "this
-        // table is real, and appending to it means something".
+        // Initialized is set true only on the path that also ran InitializePrefabRange and
+        // SetCollectionId, so it is the one flag that says this table is real and appending to
+        // it means something. Awake's other exits leave this instance about to be destroyed.
         if (!__instance.Initialized) return;
 
         RoulettePrefabRegistration.EnsureRegistered(__instance, "NetworkManager.Awake");

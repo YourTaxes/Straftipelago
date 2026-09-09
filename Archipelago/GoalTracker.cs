@@ -4,21 +4,14 @@ using Straftapelago.Finnegan_McD.org.Utils;
 namespace Straftapelago.Finnegan_McD.org.Archipelago;
 
 /// <summary>
-/// Watches the room's two goal thresholds and reports each one the moment it is met.
+/// Watches the room's two goal thresholds and reports each one the moment it is met. The
+/// apworld's Takes_Complete and Weapons_Complete goals are events, so they have no location id
+/// and nothing can be sent for one individually; what the server hears is the StatusUpdate that
+/// says this slot has finished, once the win_condition's events are all achieved. Each event is
+/// announced in the Archipelago console as it happens. Neither flag is stored - the weapon side
+/// counts checks the server remembers and the take side counts the session - so
+/// <see cref="Evaluate"/> is safe to call as often as anything likes.
 /// </summary>
-/// <remarks>
-/// <para>The apworld's two goals are the "Takes_Complete" and "Weapons_Complete" events, placed
-/// on the "Met Take Victory Requirement" and "Met Weapon Percentage Requirement" event
-/// locations, and its win_condition option decides which of them the completion rule wants.
-/// Those are EVENTS, so they have no location id and there is no packet that can send one - the
-/// server never hears about them individually. What it does hear is the StatusUpdate that says
-/// this slot has finished, which is what goes out once the win condition's events are all
-/// achieved. Each event is also announced in the Archipelago console as it happens, so the
-/// player can see the half-way point of a "both" goal.</para>
-/// <para>Neither flag is stored anywhere. Both re-derive on their own: the weapon side counts
-/// checks the server itself remembers, and the take side counts a session that starts at zero
-/// with the process. That also means Evaluate is safe to call as often as anything likes.</para>
-/// </remarks>
 internal static class GoalTracker
 {
     /// <summary>Whether enough takes have been won for the apworld's Takes_Complete event.</summary>
@@ -31,13 +24,10 @@ internal static class GoalTracker
     private static bool reportedToRoom;
 
     /// <summary>
-    /// Re-reads both goals and announces anything that has just been achieved.
+    /// Re-reads both goals and announces anything that has just been achieved. Called from every
+    /// place that can move either number - a take won, a first kill, a pool rebuild - rather
+    /// than from a frame loop, so the room hears about a finished world when it finishes.
     /// </summary>
-    /// <remarks>
-    /// Called from every place that can move either number - a take won, a first kill, a pool
-    /// rebuild - rather than from a frame loop, so the room hears about a finished world when it
-    /// finishes rather than whenever the player next opens the pause menu.
-    /// </remarks>
     internal static void Evaluate()
     {
         // A goal is a room's idea, and offline ServerData is only holding the apworld's
@@ -72,12 +62,9 @@ internal static class GoalTracker
 
     /// <summary>
     /// Whether the earned share of the check-carrying weapons has reached the room's threshold.
+    /// Cross-multiplied rather than divided, so this agrees exactly with the floored percentage
+    /// the pause menu shows and the tick can never appear a weapon early or late.
     /// </summary>
-    /// <remarks>
-    /// Cross-multiplied rather than divided so this agrees exactly with the percentage the pause
-    /// menu shows, which is floored: both ask "is earned/checkable at least threshold/100" with
-    /// no rounding in between, so the tick can never appear a weapon early or late.
-    /// </remarks>
     private static bool WeaponsGoalReached(ArchipelagoData serverData)
     {
         RouletteState roulette = Plugin.RouletteState;

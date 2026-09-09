@@ -33,8 +33,8 @@ public class ArchipelagoData
     public List<long> CheckedLocations;
 
     /// <summary>
-    /// seed for this archipelago data. Can be used when loading a file to verify the session the player is trying to
-    /// load is valid to the room it's connecting to.
+    /// The room's seed, for checking that a loaded session belongs to the room it is connecting
+    /// to.
     /// </summary>
     private string seed;
 
@@ -43,21 +43,16 @@ public class ArchipelagoData
     public bool NeedSlotData => slotData == null;
 
     /// <summary>
-    /// whether the room wants this slot linked to the multiworld's deaths. Read out of slot data
+    /// Whether the room wants this slot linked to the multiworld's deaths. Read out of slot data
     /// on connect, so the room's YAML is the only thing that decides it.
     /// </summary>
     public bool DeathLink { get; private set; }
 
     /// <summary>
     /// How many of the local player's own deaths it takes to send one death out to the
-    /// multiworld - the apworld's DeathsPerLink Range option.
+    /// multiworld - the apworld's DeathsPerLink Range option. Outgoing only: a death arriving
+    /// from another world always kills, whatever this is. 1 shares every death.
     /// </summary>
-    /// <remarks>
-    /// Outgoing only. A death arriving from another world always kills, whatever this is: the
-    /// room decided to send it, and swallowing it here would silently unlink this slot. 1 - the
-    /// apworld's default and the floor of its range - shares every death, which is what a room
-    /// with no such option behaves like.
-    /// </remarks>
     public int DeathsPerLink { get; private set; } = DefaultDeathsPerLink;
 
     /// <summary>Whether the room asked for Green Mode. Mirrored onto the Mod Menu setting.</summary>
@@ -99,13 +94,9 @@ public class ArchipelagoData
 
     /// <summary>
     /// How many Round_N locations the room has, and therefore the last round win that is worth
-    /// sending a check for.
+    /// sending a check for. A cap, not a goal: the apworld creates Round_1 through Round_N and
+    /// no more, so a session that runs past N has nothing left to send.
     /// </summary>
-    /// <remarks>
-    /// A cap, not a goal. The apworld creates Round_1 through Round_N and no more, so a session
-    /// that runs past N has nothing left to send - and sending anyway would log "the room has no
-    /// location named Round_31" once per round for the rest of the night.
-    /// </remarks>
     public int RoundChecks { get; private set; } = DefaultRoundChecks;
 
     // The slot data keys the room publishes these options under. They are the option attribute
@@ -131,10 +122,9 @@ public class ArchipelagoData
     private const int DefaultRoundChecks = 30;
     private const int DefaultDeathsPerLink = 1;
 
-    // Deliberately wider than the apworld's WinThreshold Range (1-100). Every other clamp here
-    // protects a control that cannot display an out-of-range value; this one is a GOAL, and
+    // Deliberately wider than the apworld's WinThreshold Range (1-100): this one is a GOAL, and
     // clamping a raised threshold down would quietly complete the world early. The upper bound
-    // is only here to reject a garbage value outright.
+    // only rejects a garbage value.
     private const int WinThresholdMinimum = 1;
     private const int WinThresholdMaximum = 1000;
 
@@ -142,9 +132,9 @@ public class ArchipelagoData
     private const int WeaponGoalThresholdMinimum = 0;
     private const int WeaponGoalThresholdMaximum = 100;
 
-    // The bounds of the apworld's RoundChecks Range option. Clamped rather than widened like the
-    // win threshold: this one is not a goal but a count of locations that either exist or do not,
-    // and a value above the apworld's own maximum names a Round_N the room cannot have.
+    // The bounds of the apworld's RoundChecks Range option. Clamped, because this is a count of
+    // locations that either exist or do not: a value above the maximum names a Round_N the room
+    // cannot have.
     private const int RoundChecksMinimum = 0;
     private const int RoundChecksMaximum = 100;
 
@@ -176,24 +166,19 @@ public class ArchipelagoData
     }
 
     /// <summary>
-    /// assigns the slot data and seed to my data handler. any necessary setup using this data can be done here.
+    /// Reads the room's answer to this slot's YAML out of slot data. A key the room does not
+    /// send leaves the setting where it already was, which is why the two settings with a local
+    /// Mod Menu equivalent read their fallback out of it. Nothing here touches Unity - this runs
+    /// on the ThreadPool thread HandleConnectResult is on, and putting these into effect is
+    /// <see cref="ArchipelagoClient"/>'s job.
     /// </summary>
-    /// <param name="roomSlotData">slot data of your slot from the room</param>
-    /// <param name="roomSeed">seed name of this session</param>
-    /// <remarks>
-    /// A key the room does not send leaves the setting where it already was, which is why the
-    /// two settings that have a local Mod Menu equivalent read their fallback out of it. The
-    /// three weapon toggles have no local setting, so their fallback is the apworld's own
-    /// default of off. Nothing here touches Unity - this runs on the ThreadPool thread
-    /// HandleConnectResult is on, and applying these is <see cref="ArchipelagoClient"/>'s job.
-    /// </remarks>
+    /// <param name="roomSlotData">This slot's slot data, as the room sent it.</param>
+    /// <param name="roomSeed">Seed name of this session.</param>
     public void SetupSession(Dictionary<string, object> roomSlotData, string roomSeed)
     {
-        // Kept, not overwritten, when the room sends nothing. A reconnect asks for slot data
-        // only when there is none - that is what NeedSlotData means - so the second login
-        // legitimately answers null, and assigning it would throw away the room's settings
-        // while still connected to the room. Every reader below then falls back to its current
-        // value, which is what makes reconnecting leave the session exactly as it was.
+        // Kept, not overwritten, when the room sends nothing: a reconnect asks for slot data
+        // only when there is none, so the second login legitimately answers null. Every reader
+        // below then falls back to its current value.
         if (roomSlotData != null) slotData = roomSlotData;
         seed = roomSeed;
 
@@ -220,16 +205,11 @@ public class ArchipelagoData
     }
 
     /// <summary>
-    /// pulls one Toggle option out of slot data, tolerating every shape it can arrive in
+    /// Pulls one Toggle option out of slot data. An Archipelago Toggle is a 0/1 on the wire and
+    /// slot data deserializes into object, so this arrives as a long far more often than as a
+    /// bool; Convert.ToBoolean covers that, a real bool and a string alike, and anything it
+    /// cannot read is reported and left at <paramref name="current"/>.
     /// </summary>
-    /// <remarks>
-    /// An Archipelago Toggle option is a 0/1 on the wire - the apworld's fill_slot_data calls
-    /// options.as_dict() without toggles_as_bools - and slot data is deserialized into object,
-    /// so Newtonsoft hands this back as a long far more often than as a bool. A room built
-    /// against a newer apworld could also send a real bool, and a hand-edited one a string.
-    /// Convert.ToBoolean covers all three, and anything it cannot read is reported and left at
-    /// <paramref name="current"/> rather than throwing out of a successful login.
-    /// </remarks>
     /// <param name="current">What the setting is now, and what it stays as if the room is silent.</param>
     private static bool ReadToggle(Dictionary<string, object> roomSlotData, string key, bool current)
     {
@@ -249,7 +229,7 @@ public class ArchipelagoData
     }
 
     /// <summary>
-    /// pulls one Range option out of slot data and clamps it into the range the game can use
+    /// Pulls one Range option out of slot data and clamps it into the range the game can use.
     /// </summary>
     /// <param name="current">What the setting is now, and what it stays as if the room is silent.</param>
     private static int ReadRange(
@@ -303,15 +283,11 @@ public class ArchipelagoData
     }
 
     /// <summary>
-    /// one line per slot data entry, for printing into the Archipelago console once the login
-    /// that carried it has succeeded.
+    /// One line per slot data entry, for printing into the Archipelago console once the login
+    /// that carried it has succeeded. Values go back through Newtonsoft rather than ToString,
+    /// because a list arrives as a JArray and a nested table as a JObject, both of which would
+    /// otherwise print as their type name.
     /// </summary>
-    /// <remarks>
-    /// Values are rendered back through Newtonsoft rather than with ToString, because slot data
-    /// is deserialized into object: a list arrives as a JArray and a nested table as a JObject,
-    /// and both of those print as their type name otherwise. Serializing shows what the room
-    /// actually sent, which is the whole point of printing it.
-    /// </remarks>
     public IEnumerable<string> DescribeSlotData()
     {
         if (slotData == null || slotData.Count == 0)
@@ -328,9 +304,7 @@ public class ArchipelagoData
             yield return $"    {entry.Key}: {DescribeValue(entry.Value)}";
     }
 
-    /// <summary>
-    /// renders a single slot data value for <see cref="DescribeSlotData"/>
-    /// </summary>
+    /// <summary>Renders a single slot data value for <see cref="DescribeSlotData"/>.</summary>
     private static string DescribeValue(object value)
     {
         if (value == null) return "null";
@@ -348,10 +322,7 @@ public class ArchipelagoData
         }
     }
 
-    /// <summary>
-    /// returns the object as a json string to be written to a file which you can then load
-    /// </summary>
-    /// <returns></returns>
+    /// <summary>The whole object as a json string, for writing to a file.</summary>
     public override string ToString()
     {
         return JsonConvert.SerializeObject(this);

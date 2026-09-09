@@ -5,29 +5,19 @@ using Straftapelago.Finnegan_McD.org.Utils;
 namespace Straftapelago.Finnegan_McD.org.Patches;
 
 /// <summary>
-/// The room's Health filler item: sets the local player's health to
-/// <see cref="BuffedHealth"/>.
+/// The room's Health filler item: sets the local player's health to <see cref="BuffedHealth"/>.
+/// Queued rather than applied where it is received, because the item arrives on the Archipelago
+/// client's websocket thread, and held until there is a living local player to give it to - one
+/// spent on the menu, on a corpse or between rounds would be a buff the player never got.
 /// </summary>
-/// <remarks>
-/// <para>Queued rather than applied where it is received, for the same reason a death link is.
-/// The item arrives on the Archipelago client's websocket thread; there is no PlayerHealth to
-/// write to from there, and touching one would be a Unity call off the main thread.</para>
-/// <para>It also has to wait for a player at all. An item can land while the player is on the
-/// menu, dead, or between rounds, and a buff spent on a PlayerHealth that is about to be
-/// replaced is a buff the player never got - so this holds it until there is a living local
-/// player to give it to, the same way <c>DeathLinkHandler.KillPlayer</c> holds a death.</para>
-/// </remarks>
 internal static class PlayerHealthBuff
 {
     /// <summary>
-    /// What the room's Health item sets the player to.
+    /// What the room's Health item sets the player to, in the units the field is stored in
+    /// rather than the ones the HUD shows: the display is this number times 25, so a round
+    /// starts at 4 and reads 100, and this 8 reads 200. The apworld's items.py carries the
+    /// matching note.
     /// </summary>
-    /// <remarks>
-    /// In the units the field is actually stored in, which are NOT the units the HUD shows. The
-    /// display is this number times 25, so a round starts at 4 and reads 100, and this 8 reads
-    /// 200 - double health. Writing the displayed number here instead is what put 125000 on
-    /// screen. See the matching note on the item in the apworld's items.py.
-    /// </remarks>
     private const float BuffedHealth = 8f;
 
     /// <summary>
@@ -63,14 +53,12 @@ internal static class PlayerHealthBuff
 
         if (playerHealth == null) return;
 
-        // A buff waits rather than being spent. At or below zero the player is already dying or
-        // dead, and healing a corpse does nothing the player would ever see - the same reason
-        // KillPlayer refuses to kill one.
+        // A buff waits rather than being spent: at or below zero the player is already dying,
+        // and healing a corpse does nothing they would ever see.
         if (playerHealth.health <= 0f) return;
 
         // Nothing to give: they are already at or above what this would set them to. Held, not
-        // discarded, so a buff received during an earlier full-health moment still lands after
-        // the player takes damage.
+        // discarded, so a buff received at full health still lands once they take damage.
         if (playerHealth.health >= BuffedHealth) return;
 
         lock (Gate)
@@ -83,8 +71,7 @@ internal static class PlayerHealthBuff
         playerHealth.health = BuffedHealth;
 
         // Logged with both numbers because this is a plain field write on the owning client,
-        // not the ServerRpc route the kill path takes. If vanilla clamps it back down or the
-        // server overwrites it, these two lines are what shows that.
+        // not a ServerRpc: if vanilla clamps it back down these two numbers show it.
         Plugin.BepinLogger.LogInfo($"[Health] Archipelago Health buff: {before} -> {playerHealth.health}");
         Killfeed.Write("Archipelago patched you up");
     }
@@ -92,15 +79,9 @@ internal static class PlayerHealthBuff
 
 /// <summary>
 /// Pumps the Health buff queue every frame, so a buff received from the room is applied as soon
-/// as the player is in a state to use it.
+/// as the player is in a state to use it. A postfix, so vanilla finishes this frame's own health
+/// bookkeeping first.
 /// </summary>
-/// <remarks>
-/// Its own patch class rather than a second job for
-/// <see cref="PlayerHealthDeathLinkKillPatch"/>: Harmony is happy to run several postfixes on
-/// one method, and a buff has nothing to do with death link beyond needing the same per-frame
-/// hook and the same source of the local player's PlayerHealth. A postfix for the same reason
-/// that one is - vanilla finishes this frame's own health bookkeeping first.
-/// </remarks>
 [HarmonyPatch(typeof(PlayerHealth), "Update")]
 public class PlayerHealthBuffPatch
 {

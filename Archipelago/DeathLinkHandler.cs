@@ -6,6 +6,10 @@ using Straftapelago.Finnegan_McD.org.Patches;
 
 namespace Straftapelago.Finnegan_McD.org.Archipelago;
 
+/// <summary>
+/// Shares the local player's deaths with the multiworld, and applies the deaths - and the Death
+/// traps - the multiworld sends back.
+/// </summary>
 public class DeathLinkHandler
 {
     /// <summary>
@@ -16,10 +20,9 @@ public class DeathLinkHandler
         "{0} died in Archipelago and ruined it for {1} - everybody point and laugh at {1}";
 
     /// <summary>
-    /// What the lobby is told when the death came from a Death trap rather than another world.
-    /// {0} is the Archipelago slot that sent the trap, {1} is the local player. Separate from
-    /// <see cref="BroadcastFormat"/> because a trap was aimed here on purpose - the sender is
-    /// the one to point at, not the one who died somewhere else.
+    /// What the lobby is told when the death came from a Death trap. {0} is the Archipelago slot
+    /// that sent the trap, {1} is the local player: a trap was aimed here on purpose, so the
+    /// sender is the one to point at.
     /// </summary>
     private const string TrapBroadcastFormat =
         "{0} sent {1} a death trap; Everybody point and laugh at {0}";
@@ -31,13 +34,11 @@ public class DeathLinkHandler
     private const string UnknownTrapSender = "Archipelago";
 
     /// <summary>
-    /// One death waiting to be applied, and where it came from.
+    /// One death waiting to be applied, and where it came from. Traps and received deaths share
+    /// this queue: they compete for the same one death the player can usefully be given at a
+    /// time, and both need the same wait for a state where a kill is visible. Only the
+    /// announcement differs.
     /// </summary>
-    /// <remarks>
-    /// The two share this queue, and must: they compete for the same one death the player can
-    /// usefully be given at a time, and both need the same wait for a state where a kill is
-    /// visible. Only the announcement differs.
-    /// </remarks>
     private readonly struct PendingDeath
     {
         public PendingDeath(DeathLink link, string trapSender)
@@ -50,9 +51,9 @@ public class DeathLinkHandler
         public DeathLink Link { get; }
 
         /// <summary>
-        /// The Archipelago slot that sent the Death trap, or null when this is a received death
-        /// rather than a trap. Carried per-death rather than read at announce time because the
-        /// queue can hold more than one, from more than one sender.
+        /// The Archipelago slot that sent the Death trap, or null when this is a received death.
+        /// Carried per-death rather than read at announce time, because the queue can hold more
+        /// than one, from more than one sender.
         /// </summary>
         public string TrapSender { get; }
 
@@ -64,15 +65,14 @@ public class DeathLinkHandler
     private readonly DeathLinkService service;
 
     /// <summary>
-    /// How many local deaths it takes to send one out - the room's DeathsPerLink option, taken
-    /// once at construction because that is the connect that carried the slot data it came from.
+    /// How many local deaths it takes to send one out - the room's deaths_per_link, taken once
+    /// at construction because that is the connect that carried the slot data it came from.
     /// </summary>
     private readonly int deathsPerLink;
 
     /// <summary>
     /// Local deaths counted since the last one was shared. Only ever touched from Unity's main
-    /// thread - <see cref="LocalPlayerDied"/> is called out of PlayerHealth.Update and the pause
-    /// overlay reads it in OnGUI - so unlike <see cref="deathLinks"/> it needs no lock.
+    /// thread, so unlike <see cref="deathLinks"/> it needs no lock.
     /// </summary>
     private int deathsSinceLastLink;
 
@@ -85,10 +85,9 @@ public class DeathLinkHandler
     public int DeathsPerLink => deathsPerLink;
 
     /// <summary>
-    /// Deaths taken since the last one was shared, so the overlay can show
-    /// <c>DeathsTowardNextLink / DeathsPerLink</c>. Never reaches
-    /// <see cref="DeathsPerLink"/>: the death that would make it equal is the one that is sent,
-    /// and it resets to 0 in the same call.
+    /// Deaths taken since the last one was shared. Never reaches <see cref="DeathsPerLink"/>:
+    /// the death that would make it equal is the one that is sent, and it resets to 0 in the
+    /// same call.
     /// </summary>
     public int DeathsTowardNextLink => deathsSinceLastLink;
 
@@ -97,34 +96,27 @@ public class DeathLinkHandler
 
     /// <summary>
     /// Deaths waiting to be applied. Filled on the Archipelago client's websocket thread and
-    /// drained on Unity's main thread, so every touch of it is locked. It corrupts its
-    /// backing array if an Enqueue lands in the middle of a Dequeue. Same reason
-    /// <see cref="Utils.MainThreadQueue"/> locks.
+    /// drained on Unity's main thread, so every touch of it is locked: a Queue corrupts its
+    /// backing array if an Enqueue lands in the middle of a Dequeue.
     /// </summary>
     private readonly Queue<PendingDeath> deathLinks = new();
 
     /// <summary>
-    /// Set while a death this handler caused is still working its way back to the player, so that it is
-    /// not immediately sent out again as a death the plyaer caused.
+    /// Set while a death this handler caused is still working its way back to the player, so it
+    /// is not sent straight out again as a death of the player's own. <see cref="KillPlayer"/>
+    /// goes through a ServerRpc whose logic sets health to -8f, which lands back on this client
+    /// a frame or two later and is indistinguishable at PlayerHealth.Update from any other
+    /// death.
     /// </summary>
-    /// <remarks>
-    /// <see cref="KillPlayer"/> goes through FirstPersonController.DespawnObject, a ServerRpc
-    /// whose logic sets health to -8f. That lands back on this client a frame or two later and is
-    /// indistinguishable, at PlayerHealth.Update, from any other death, so without this latch a
-    /// received death bounces straight back into the multiworld and every linked world dies again.
-    /// </remarks>
     private bool suppressNextDeath;
 
     /// <summary>
-    /// instantiates the death link handler, sets up the hook for receiving death links, and enables death link if needed
+    /// Subscribes to the death link service and enables the link if the room asked for it.
     /// </summary>
-    /// <param name="deathLinkService">The new DeathLinkService that the handler will use to send and
-    /// receive death links</param>
-    /// <param name="enableDeathLink">Whether the mod should enable death link or not on startup</param>
-    /// <param name="deathsPerLinkSetting">The room's deaths_per_link. Anything below 1 is taken as
-    /// 1, as "a link every no deaths" has no meaning, and every-death is what a game that does not
-    /// offer the option behaves like. ArchipelagoData clamps it too; this is here so the invariant
-    /// holds for any other caller as well.</param>
+    /// <param name="deathLinkService">The service this handler sends and receives through.</param>
+    /// <param name="enableDeathLink">Whether the room turned death link on for this slot.</param>
+    /// <param name="deathsPerLinkSetting">The room's deaths_per_link. Anything below 1 is taken
+    /// as 1, since "a link every no deaths" has no meaning.</param>
     public DeathLinkHandler(
         DeathLinkService deathLinkService, string name, bool enableDeathLink = false, int deathsPerLinkSetting = 1)
     {
@@ -140,9 +132,7 @@ public class DeathLinkHandler
         }
     }
 
-    /// <summary>
-    /// enables/disables death link
-    /// </summary>
+    /// <summary>Turns death link on or off.</summary>
     public void ToggleDeathLink()
     {
         deathLinkEnabled = !deathLinkEnabled;
@@ -162,15 +152,11 @@ public class DeathLinkHandler
         }
     }
 
-    /// <summary>
-    /// what happens when the player receives a deathLink
-    /// </summary>
-    /// <param name="deathLink">Received Death Link object to handle</param>
+    /// <summary>Queues a death that arrived from another world.</summary>
     private void DeathLinkReceived(DeathLink deathLink)
     {
         // Queued rather than acted on: this runs on the Archipelago client's websocket thread,
         // and every step of actually killing the player is a main-thread-only Unity call.
-        // PlayerHealthDeathLinkKillPatch drains it.
         lock (deathLinks)
         {
             deathLinks.Enqueue(new PendingDeath(deathLink, null));
@@ -183,15 +169,11 @@ public class DeathLinkHandler
 
     /// <summary>
     /// Queues a death the room inflicted with a Death trap, to be applied like a received one.
-    /// </summary>
-    /// <remarks>
     /// Through this queue rather than a kill path of its own, because everything that makes a
-    /// received death safe applies to a trap unchanged: the wait for a state where the kill is
-    /// visible, and above all the suppressNextDeath latch. Without that latch the trap's own
-    /// death would come back around through PlayerHealth.Update and be reported to the
-    /// multiworld as a fresh death of ours, killing every linked world for a trap that was only
-    /// ever meant for this one.
-    /// </remarks>
+    /// received death safe applies to a trap unchanged - above all the
+    /// <see cref="suppressNextDeath"/> latch, without which the trap's own death would be
+    /// reported back to the multiworld as a fresh one and kill every linked world.
+    /// </summary>
     /// <param name="sender">The Archipelago slot that sent the trap, for the line the lobby is
     /// shown. Blank or null falls back to <see cref="UnknownTrapSender"/>.</param>
     public void EnqueueTrapDeath(string sender)
@@ -209,18 +191,18 @@ public class DeathLinkHandler
     }
 
     /// <summary>
-    /// Called every frame from <see cref="Patches.PlayerHealthDeathLinkKillPatch"/> with the local
-    /// player's health. Kills them the way falling out of the map does if a death is waiting and
-    /// they are in a state to receive it.
+    /// Called every frame from <see cref="Patches.PlayerHealthDeathLinkKillPatch"/>. Kills the
+    /// local player the way falling out of the map does, if a death is waiting and they are in a
+    /// state to receive it.
     /// </summary>
     /// <param name="playerHealth">The local player's PlayerHealth. The patch has already checked
-    /// IsOwner, so this is never somebody else's.</param>
+    /// IsOwner.</param>
     public void KillPlayer(PlayerHealth playerHealth)
     {
         try
         {
-            // Cheap early-out for the overwhelmingly common case: this runs every frame, and
-            // almost every one of them has nothing waiting.
+            // Cheap early-out: this runs every frame, and almost every one of them has nothing
+            // waiting.
             lock (deathLinks)
             {
                 if (deathLinks.Count < 1) return;
@@ -229,23 +211,18 @@ public class DeathLinkHandler
             if (playerHealth == null || playerHealth.controller == null) return;
 
             // A death waits rather than being spent. Health at or below zero means they are
-            // already dying or dead, and the controller's canMove is false through the freezes
-            // PlayerManager.SetPlayerMove puts on the round transitions - killing into either of
-            // those states does nothing visible and the death would be silently thrown away.
+            // already dying, and canMove is false through the round-transition freezes; killing
+            // into either state does nothing visible and the death would be thrown away.
             //
-            // controller.canMove, NOT playerHealth.canMove: the one on PlayerHealth is
-            // initialized true in its constructor and no game code ever writes it again, so it
-            // would gate on nothing. The controller's is the live one, and it is also lowered by
-            // the taser - a death arriving mid-stun therefore lands when the stun ends, which is
-            // the right side to err on.
+            // controller.canMove, not playerHealth.canMove: the one on PlayerHealth is
+            // initialized true in its constructor and never written again. The controller's is
+            // also lowered by the taser, so a death arriving mid-stun lands when the stun ends.
             if (playerHealth.health <= 0f || !playerHealth.controller.canMove) return;
 
             PendingDeath pendingDeath;
             lock (deathLinks)
             {
-                // Re-checked inside the lock rather than trusting the count above. Nothing else
-                // dequeues today, but a Dequeue on an empty queue throws, and the guard costs
-                // nothing next to the kill it is protecting.
+                // Re-checked inside the lock, because a Dequeue on an empty queue throws.
                 if (deathLinks.Count < 1) return;
                 pendingDeath = deathLinks.Dequeue();
             }
@@ -261,14 +238,14 @@ public class DeathLinkHandler
             // host the server half can run inside this call.
             suppressNextDeath = true;
 
-            // Vanilla's void death, which is FirstPersonController.OnTriggerEnter's "Killz"
-            // branch and its own y < -300f branch, both of which do exactly this. fellVoid is
-            // what makes PlayerHealth.Update print the death to the feed.
+            // Vanilla's void death, which is what FirstPersonController's own Killz and
+            // below-the-map branches do. fellVoid is what makes PlayerHealth.Update print the
+            // death to the feed.
             //
             // Settings.Instance.IncreaseSuicidesAmount() is the one line of that sequence left
-            // out on purpose: a death handed to us by another world is not a suicide, so it must
-            // not inflate the player's suicide stat - and calling it would make SuicideDetectPatch
-            // print a second, wrong "killed themselves" line over the top of ours.
+            // out on purpose: a death another world handed over is not a suicide, so it must not
+            // inflate the suicide stat, and calling it would make SuicideDetectPatch print a
+            // second, wrong "killed themselves" line over this one.
             playerHealth.fellVoid = true;
             playerHealth.controller.DespawnObject(playerHealth.gameObject);
 
@@ -285,8 +262,8 @@ public class DeathLinkHandler
     /// <summary>
     /// Tells every player in the STRAFTAT match what is responsible for this death.
     /// </summary>
-    /// <param name="message">The already-formatted line, since a trap and a received death
-    /// blame different things.</param>
+    /// <param name="message">The already-formatted line, since a trap and a received death blame
+    /// different things.</param>
     private void Broadcast(string message)
     {
         Plugin.BepinLogger.LogInfo($"[DeathLink] {message}");
@@ -294,10 +271,9 @@ public class DeathLinkHandler
         try
         {
             // WriteLog, not KillFeed's WriteLocalLog: this line is meant for the whole lobby.
-            // WriteLog is a ServerRpc whose reader checks only IsServer - there is no ownership
-            // check - so any client may call it and the server relays it to every observer.
-            // MatchLogs is a NetworkBehaviour singleton and is null offline; MatchLogsOffline is
-            // the live one there, and local-only is all there is to write to anyway.
+            // WriteLog is a ServerRpc whose reader checks only IsServer, so any client may call
+            // it and the server relays it to every observer. MatchLogs is null offline;
+            // MatchLogsOffline is the live one there.
             if (MatchLogs.Instance != null)
             {
                 MatchLogs.Instance.WriteLog(message);
@@ -310,31 +286,25 @@ public class DeathLinkHandler
         catch (Exception e)
         {
             // The player is already dead by now and the line is in the BepInEx log either way.
-            // A half-built chat panel must not turn into a swallowed death.
             Plugin.BepinLogger.LogError($"[DeathLink] Could not announce the death to the lobby{Environment.NewLine}{e}");
         }
     }
 
-    /// <summary>
-    /// returns message for the player to see when a death link is received without a cause
-    /// </summary>
-    /// <param name="deathLink">death link object to get relevant info from</param>
-    /// <returns></returns>
+    /// <summary>The line shown when a received death link carries no cause of its own.</summary>
     private string GetDeathLinkCause(DeathLink deathLink)
     {
         return $"Received death from {deathLink.Source}";
     }
 
     /// <summary>
-    /// Called from <see cref="Patches.PlayerHealthDeathLinkSendPatch"/> on the one frame the local
-    /// player's death is visible, whatever caused it.
+    /// Called from <see cref="Patches.PlayerHealthDeathLinkSendPatch"/> on the one frame the
+    /// local player's death is visible, whatever caused it.
     /// </summary>
-    /// <param name="playerHealth">The local player's PlayerHealth, read for what killed them.</param>
     public void LocalPlayerDied(PlayerHealth playerHealth)
     {
         try
         {
-            // The death the player caused themselves, coming back around. Consumed rather than merely
+            // A death this handler caused, coming back around. Consumed rather than merely
             // tested, so the next real death is shared normally.
             if (suppressNextDeath)
             {
@@ -342,12 +312,10 @@ public class DeathLinkHandler
                 return;
             }
 
-            // Counted, not sent, until the room's deaths_per_link is reached. Gated here rather
-            // than inside SendDeathLink so that the traps and any future caller that means "send
-            // this death now" still do exactly that; this is only the rule for deaths of ours.
-            //
-            // Ahead of the count, not after it: deaths taken while unlinked must not build up
-            // progress that fires the moment DeathLink is switched back on.
+            // Gated here rather than inside SendDeathLink, so that a trap or any other caller
+            // meaning "send this death now" still does exactly that. Ahead of the count, not
+            // after it: deaths taken while unlinked must not build up progress that fires the
+            // moment death link is switched back on.
             if (!deathLinkEnabled) return;
 
             deathsSinceLastLink++;
@@ -374,7 +342,7 @@ public class DeathLinkHandler
 
     /// <summary>
     /// Turns the flags vanilla sets on the way into a death into a line for the world that
-    /// receives it. The two flags are the same ones PlayerHealth.Update reads for its own feed.
+    /// receives it. These are the same flags PlayerHealth.Update reads for its own feed.
     /// </summary>
     private string DescribeDeath(PlayerHealth playerHealth)
     {
@@ -387,11 +355,9 @@ public class DeathLinkHandler
         return $"{playerName} was killed in STRAFTAT";
     }
 
-    /// <summary>
-    /// called to send a death link to the multiworld
-    /// </summary>
-    /// <param name="cause">what killed the player, shown by the worlds that receive it. Null falls
-    /// back to the bare slot name.</param>
+    /// <summary>Sends one death out to the multiworld.</summary>
+    /// <param name="cause">What killed the player, shown by the worlds that receive it. Null
+    /// falls back to the bare slot name.</param>
     public void SendDeathLink(string cause = null)
     {
         try

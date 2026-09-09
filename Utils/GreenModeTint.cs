@@ -5,34 +5,21 @@ namespace Straftapelago.Finnegan_McD.org.Utils;
 
 /// <summary>
 /// Green Mode: tints the player's camera green while the config option is on.
+/// The tint goes through the game's own post-processing: every player camera carries a PPv2
+/// volume whose ColorGrading settings FirstPersonController pulls into a public field, so
+/// writing <c>colorFilter</c> tints everything the camera renders in a pass the game already
+/// runs. colorFilter specifically, because the game writes saturation and gamma every frame and
+/// would overwrite anything put there. A damage flash still greys the tint out briefly, since
+/// PPv2 applies saturation after the colour filter.
 /// </summary>
-/// <remarks>
-/// <para>The tint goes through the game's own post-processing rather than an overlay drawn on
-/// top of it. Every player camera already carries a PPv2 <c>PostProcessVolume</c>, and
-/// <c>FirstPersonController.Awake___UserLogic</c> pulls the <c>ColorGrading</c> settings off
-/// its profile into a public field. Writing <c>colorFilter</c> there tints everything the
-/// camera renders, in the same pass the game already runs — no shader, no material, no second
-/// camera.</para>
-/// <para><b>Why colorFilter and not one of the neighbouring knobs.</b> The game writes
-/// <c>saturation</c> every frame (FirstPersonController lerps it back to 0, and every damage
-/// source slams it to -100 for the grey flash) and <c>gamma</c> every frame from the
-/// brightness setting. Anything written to those would be overwritten within a frame.
-/// Nothing in the game touches <c>colorFilter</c>, so it is ours alone and survives.</para>
-/// <para>Note that a damage flash still greys the tint out briefly: PPv2 applies saturation
-/// after the colour filter, so -100 saturation drains the green along with everything else.
-/// That is the vanilla effect doing its job, not the tint failing.</para>
-/// </remarks>
 internal static class GreenModeTint
 {
     /// <summary>
     /// Multiplied over everything the camera renders, from the hidden Tint RGB config entry.
-    /// Read fresh on every apply rather than cached, so an edit to the config file takes
-    /// effect the moment BepInEx reloads it.
+    /// Read fresh on every apply, so an edit to the config file takes effect the moment BepInEx
+    /// reloads it. Alpha is fixed at 1, because PPv2 multiplies channel by channel and never
+    /// reads it - which is why the entry is a Vector3.
     /// </summary>
-    /// <remarks>
-    /// Alpha is fixed at 1: PPv2 multiplies the filter channel by channel and never reads its
-    /// alpha, which is why the entry itself is a Vector3.
-    /// </remarks>
     private static Color Tint
     {
         get
@@ -44,8 +31,7 @@ internal static class GreenModeTint
 
     /// <summary>
     /// PPv2's own default for <c>colorFilter</c>, and the identity value for a filter that is
-    /// multiplied over the image — so this is what "off" restores. Nothing in the game writes
-    /// the field, so there is no other value that could have been there to preserve.
+    /// multiplied over the image, so this is what "off" restores.
     /// </summary>
     private static readonly Color Neutral = Color.white;
 
@@ -72,14 +58,10 @@ internal static class GreenModeTint
 
     /// <summary>
     /// Re-applies the setting to every player currently in the scene, so toggling the option
-    /// mid-match is visible immediately instead of at the next spawn.
+    /// mid-match is visible immediately instead of at the next spawn. Every controller rather
+    /// than FirstPersonController.instance, which names whichever player spawned last; a remote
+    /// player's camera is not rendering anyway.
     /// </summary>
-    /// <remarks>
-    /// Every controller, rather than <c>FirstPersonController.instance</c>: that static is
-    /// assigned by each player's Awake in turn, so in a match it names whichever player
-    /// happened to spawn last, not the local one. Applying to all of them is correct and
-    /// costs nothing, as a remote player's camera is not rendering anyway.
-    /// </remarks>
     public static void RefreshAll()
     {
         FirstPersonController[] controllers = Object.FindObjectsOfType<FirstPersonController>();
