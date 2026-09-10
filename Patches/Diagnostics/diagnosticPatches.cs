@@ -137,8 +137,8 @@ public class ItemBehaviourStartDiagPatch
 }
 
 /// <summary>
-/// Logs the two references OnDrop can fall over on: the camera the mod's own OnDropPatch
-/// reads, and the weaponScript vanilla's body reads.
+/// Logs the two references OnDrop can fall over on: the camera it ejects along, and the
+/// weaponScript its first statement reads.
 /// </summary>
 [HarmonyPatch(typeof(ItemBehaviour), "OnDrop")]
 public class ItemBehaviourOnDropDiagPatch
@@ -148,7 +148,7 @@ public class ItemBehaviourOnDropDiagPatch
         DiagLog.Log("ItemBehaviour.OnDrop",
             $"weapon={__instance.weaponName} obj={__instance.gameObject.name} " +
             $"id={__instance.GetInstanceID()} {DiagLog.NetRoles()} " +
-            $"tempCam={(tempCam == null ? "NULL (mod OnDropPatch would NRE)" : "ok")} " +
+            $"tempCam={(tempCam == null ? "NULL (OnDrop would NRE)" : "ok")} " +
             $"weaponScript={(Traverse.Create(__instance).Field("weaponScript").GetValue<Weapon>() == null ? "NULL (vanilla OnDrop would NRE)" : "ok")} " +
             $"parent={DiagLog.Describe(__instance.transform.parent)} layer={__instance.gameObject.layer}");
     }

@@ -127,9 +127,9 @@ public class GrabPatches
             $"gripRight={(gripRightT == null ? "null" : "ok")} gripLeft={(gripLeftT == null ? "null" : "ok")} " +
             $"camAnimScript={(ppT.Field("camAnimScript").GetValue<CameraShakeConstrains>() == null ? "NULL" : "ok")}");
 
-        // Without a camera nothing below is safe - RightHandDrop reaches StickOnGround and the
-        // mod's OnDropPatch reads tempCam.transform. Leave the roulette in hand instead, which
-        // the player can still drop by hand.
+        // Without a camera nothing below is safe - RightHandDrop reaches StickOnGround and
+        // ItemBehaviour.OnDrop reads tempCam.transform. Leave the roulette in hand instead,
+        // which the player can still drop by hand.
         if (cam == null)
         {
             Plugin.BepinLogger.LogError(

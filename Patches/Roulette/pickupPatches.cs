@@ -33,76 +33,21 @@ public class PlayerPickupAwakePatch
 }
 
 /// <summary>
-/// Runs PlayerPickup.Update by hand while the Roulette Item is held, skipping the parts of
-/// vanilla's body that dereference the weapon fields the roulette does not have. Also pumps
-/// the pending-roll timeout and the debug keys for the local player.
+/// Pumps the pending-roll timeout and the debug keys for the local player, once a frame.
+/// Vanilla's own Update runs untouched: the roulette carries a Gun, so every weapon field
+/// PlayerPickup.Update and RightHandFix read off it resolves.
 /// </summary>
 [HarmonyPatch(typeof(PlayerPickup), "Update")]
 public class PlayerPickupUpdatePatch
 {
-    static bool Prefix(PlayerPickup __instance)
+    static void Prefix(PlayerPickup __instance)
     {
         // Gated on IsOwner because this prefix runs once per PlayerPickup instance per frame,
         // so without it one keypress would act once per player in the match.
-        if (__instance.IsOwner)
-        {
-            PendingRoll.CheckTimeout();
-            DebugKeys();
-        }
+        if (!__instance.IsOwner) return;
 
-        Traverse trav = Traverse.Create(__instance);
-        if (trav.Field("weaponInHand").GetValue<Weapon>() != null) return true;
-
-        GameObject objInHand = trav.Method("sync___get_value_objInHand").GetValue<GameObject>();
-        if (objInHand == null) return true;
-
-        ItemBehaviour item = objInHand.GetComponent<ItemBehaviour>();
-        if (item == null || item.weaponName != "Roulette Item") return true;
-
-        // weaponInHand IS set (the roulette's assetbundle-bound Gun component), but none of
-        // Gun/Weapon's fields are wired up like a real weapon, so vanilla RightHandFix and
-        // LeftHandFix would dereference null. Run the IK update on its own instead.
-        trav.Method("UpdateIKPoistion").GetValue();
-
-        if (!__instance.IsOwner) return false;
-
-        // RightHandFix/LeftHandFix internally call RightHandDrop/LeftHandDrop, which also
-        // dereference weaponInHand.
-        trav.Field("dropTimer").SetValue(trav.Field("dropTimer").GetValue<float>() - Time.deltaTime);
-        trav.Field("interactTimer").SetValue(trav.Field("interactTimer").GetValue<float>() - Time.deltaTime);
-
-        if (!trav.Method("sync___get_value_hasObjectInHand").GetValue<bool>())
-        {
-            var pc = trav.Field("playerController").GetValue<FirstPersonController>();
-            pc.movementFactor = 1f;
-            pc.jumpFactor = 1f;
-            pc.maxWallJumps = 1;
-            pc.wallJumpFactor = 1f;
-        }
-
-        Camera cam = trav.Field("cam").GetValue<Camera>();
-        if (cam != null)
-        {
-            trav.Method("HandleInteractionCheck").GetValue();
-            trav.Method("HandleInteractEnvironment").GetValue();
-            trav.Method("HandleAboubiGrab").GetValue();
-
-            Animator animator = trav.Field("animator").GetValue<Animator>();
-            Animator globalAnimator = trav.Field("globalAnimator").GetValue<Animator>();
-
-            if (item.rightHandAnim == "")
-            {
-                animator.SetBool("TwoHanded", false);
-                animator.SetBool("DoubleHanded", false);
-                animator.SetBool("RightHanded", true);
-            }
-            globalAnimator.SetBool("TwoHanded", false);
-            globalAnimator.SetBool("DoubleSingle", false);
-            globalAnimator.SetBool("SingleHanded", true);
-            globalAnimator.SetBool("LeftHanded", false);
-        }
-
-        return false;
+        PendingRoll.CheckTimeout();
+        DebugKeys();
     }
 
     /// <summary>

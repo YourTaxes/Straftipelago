@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using System.Linq;
-using DG.Tweening;
 using HarmonyLib;
 using Straftapelago.Finnegan_McD.org.Utils;
 using UnityEngine;
@@ -57,37 +56,8 @@ public class ItemSpawnerSpawnPatch
 }
 
 /// <summary>
-/// Ejects the Roulette Item under its own physics when it is dropped, replacing vanilla's
-/// body so the roulette's own rigidbody settings survive.
-/// </summary>
-[HarmonyPatch(typeof(ItemBehaviour), "OnDrop")]
-public class OnDropPatch
-{
-    static bool Prefix(ItemBehaviour __instance, Camera tempCam)
-    {
-        if (__instance.weaponName != "Roulette Item") return true;
-
-        Traverse t = Traverse.Create(__instance);
-        t.Field("dispenserStart").SetValue(false);
-        Rigidbody rb = __instance.GetComponent<Rigidbody>() ?? __instance.gameObject.AddComponent<Rigidbody>();
-        rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
-        rb.drag = 0f;
-        rb.interpolation = RigidbodyInterpolation.Interpolate;
-        // Vanilla OnDrop assigns this private field; the vanilla body is skipped here, so
-        // without this Update's "tempRb == null" branch rotates the item forever.
-        t.Field("tempRb").SetValue(rb);
-        float ejectForce = t.Field<float>("ejectForce").Value;
-        float torqueForce = t.Field<float>("torqueForce").Value;
-        rb.AddForce(tempCam.transform.forward * ejectForce, ForceMode.Impulse);
-        rb.AddTorque(tempCam.transform.forward * torqueForce + __instance.transform.right * torqueForce, ForceMode.Impulse);
-
-        return false;
-    }
-}
-
-/// <summary>
 /// Keeps a parentless item out of vanilla's idle-bob tween, and wires up the Roulette Item's
-/// crosshairs, depop effect, colours and materials as it starts.
+/// crosshairs, depop effect, colours and materials as it starts, disabling its Gun component.
 /// </summary>
 [HarmonyPatch(typeof(ItemBehaviour), "Start")]
 public class StartPatches
@@ -112,6 +82,13 @@ public class StartPatches
     {
         if (__instance.weaponName == "Roulette Item")
         {
+            // Gun.Update dereferences fpArms, behaviour and rootObject through WeaponUpdate once
+            // the item leaves layer 7, and the roulette wires up none of them. Disabling the
+            // component stops Unity calling Update; field reads and the despawn path, which
+            // invokes DespawnObject directly, are unaffected.
+            Gun rouletteGun = __instance.GetComponent<Gun>();
+            if (rouletteGun != null) rouletteGun.enabled = false;
+
             Sprite sprintCrosshair = Resources.FindObjectsOfTypeAll<Sprite>()
                 .FirstOrDefault(s => s.name == "Straftat_Crosshair03_1");
             Sprite standCrosshair = Resources.FindObjectsOfTypeAll<Sprite>()
@@ -146,125 +123,3 @@ public class StartPatches
     }
 }
 
-/// <summary>
-/// Skips Gun.Update for the Roulette Item. It binds to the game's real Gun component so
-/// vanilla pickup and hold logic works, but none of Gun/Weapon's private fields are wired up
-/// like a normal spawned weapon, so its Update would dereference null every frame.
-/// </summary>
-[HarmonyPatch(typeof(Gun), "Update")]
-public class RouletteGunUpdatePatch
-{
-    static bool Prefix(Gun __instance)
-    {
-        ItemBehaviour ib = __instance.GetComponent<ItemBehaviour>();
-        return ib == null || ib.weaponName != "Roulette Item";
-    }
-}
-
-/// <summary>
-/// The Roulette Item's own drop-observer path, replacing vanilla's body because that one
-/// dereferences the weapon fields the roulette does not have.
-/// </summary>
-[HarmonyPatch(typeof(PlayerPickup), "RpcLogic___DropObjectObserver_2127535046")]
-public class DropObserverPatch
-{
-    static bool Prefix(PlayerPickup __instance, GameObject obj, bool rightHand)
-    {
-        ItemBehaviour item = obj?.GetComponent<ItemBehaviour>();
-        if (item == null || item.weaponName != "Roulette Item") return true;
-
-        Traverse trav = Traverse.Create(__instance);
-
-        if (!__instance.IsOwner)
-            item.StickOnGroundObservers();
-
-        obj.transform.DOKill(false);
-
-        if (__instance.IsOwner)
-        {
-            PauseManager.Instance.MoveAmmoDisplay(false, rightHand);
-            trav.Field("playerController").GetValue<FirstPersonController>().isScopeAiming = false;
-            if (rightHand)
-            {
-                trav.Field("weaponInHand").SetValue(null);
-                trav.Field("behaviourInHand").SetValue(null);
-            }
-            else
-            {
-                trav.Field("weaponInLeftHand").SetValue(null);
-                trav.Field("behaviourInLeftHand").SetValue(null);
-            }
-        }
-
-        if (item.rightHandAnim != "")
-        {
-            Animator anim = trav.Field("animator").GetValue<Animator>();
-            anim.SetBool(rightHand ? item.rightHandAnim : item.leftHandAnim, false);
-        }
-
-        object camAnimScript = trav.Field("camAnimScript").GetValue();
-        Traverse.Create(camAnimScript).Field("rotateBack").SetValue(true);
-
-        item.playerPickup = null;
-        item.playerController = null;
-        item.rootObject = null;
-        item.OnDrop(trav.Field("cam").GetValue<Camera>());
-        item.cam = null;
-        obj.transform.parent = null;
-        obj.transform.localScale = new Vector3(2f, 2f, 2f);
-        item.UnsetLayer();
-        obj.layer = 7;
-        object rigBuilder = trav.Field("RigBuilder").GetValue();
-        Traverse.Create(rigBuilder).Method("Build").GetValue();
-
-        return false;
-    }
-}
-
-/// <summary>
-/// Empties both hands before the Roulette Item is picked up, and skips vanilla's own
-/// right-hand pickup for it.
-/// </summary>
-[HarmonyPatch(typeof(PlayerPickup), "RightHandPickup")]
-public class RightHandPickupPatch
-{
-    static void DoSingleHandPickup(PlayerPickup instance, Traverse trav, ItemBehaviour item, Camera cam)
-    {
-        Transform[] pickupPos = trav.Field("pickupPositionRightHand").GetValue<Transform[]>();
-        trav.Method("SetObjectInHandServer",
-            instance.sync___get_value_objInHand(),
-            pickupPos[item.camChildIndex].position,
-            pickupPos[item.camChildIndex].rotation,
-            cam.gameObject,
-            true).GetValue();
-        trav.Method("SetRightIKTarget", item.gripRight).GetValue();
-        object rigBuilder = trav.Field("RigBuilder").GetValue();
-        Traverse.Create(rigBuilder).Method("Build").GetValue();
-    }
-
-    static bool Prefix(PlayerPickup __instance)
-    {
-        Traverse trav = Traverse.Create(__instance);
-        Camera cam = trav.Field("cam").GetValue<Camera>();
-        float interactionDistance = trav.Field("interactionDistance").GetValue<float>();
-        LayerMask interactionLayer = trav.Field("interactionLayer").GetValue<LayerMask>();
-        float sphereRadius = trav.Field("sphereRadius").GetValue<float>();
-        float currentHitDistance = trav.Field("currentHitDistance").GetValue<float>();
-
-        GameObject hitObj = null;
-        RaycastHit hit, hit2;
-        if (Physics.Raycast(cam.transform.position, cam.transform.forward, out hit, interactionDistance, interactionLayer))
-            hitObj = hit.transform.gameObject;
-        else if (Physics.SphereCast(cam.transform.position, sphereRadius, cam.transform.forward, out hit2, currentHitDistance, interactionLayer))
-            hitObj = hit2.transform.gameObject;
-
-        if (hitObj == null || hitObj.GetComponent<Weapon>() != null) return true;
-        ItemBehaviour item = hitObj.GetComponent<ItemBehaviour>();
-        if (item?.weaponName != "Roulette Item") return true;
-
-        __instance.LeftHandDrop();
-        __instance.RightHandDrop();
-
-        return false;
-    }
-}
