@@ -1,0 +1,33 @@
+Death trap does not activate deathlink
+
+fixed - takes won updates one take late
+
+when deathlink happens, the line should be "<player that died> ruined it for <straftat player> everyone laugh at <player that died>". the current line has the last <player that died> incorrect
+
+sometimes the client's straftat terminal says "Cannot complete action because server is not active. This may also occur if the object is not yet initialized or if it does not contain a NetworkObject component. This message may be disabled by setting the Logging field in your attribute to LoggingType.Off"
+
+sometimes when the client player walks and makes footstep noises, this comes up in the the terminal "[Warning: Unity Log] Cannot complete action because server is not active. This may also occur if the object is not yet initialized or if it does not contain a NetworkObject component. This message may be disabled by setting the Logging field in your attribute to LoggingType.Off"
+
+fixed- when a player recieves the death item, and they are avctively using the propeller item, the propeller item never stops making noise
+
+
+gameplay notes - 
+with non damaging items on, player in begining of game can finish all of their checks with small amount of weapons avalible, (eg, have 2 damaging weapons and 6 non damaging),
+therefore they will always get a non damaging weapon. need to have the roulette roll change so instead of having all of the non damaging weapons in the pool, there should be 1 item called "non damaging weapons", that if it is rolled, then it roll through the non damaging weapons, so that there is less of a chance of non damaging weapons.
+made in heaven's time should be reduced to 30 seconds
+
+end game survey - 
+ethan wants an easier way to see what he got, a second box next to the metornome countdown that says what the last weapon that was gotten, and a sound queue when you get a kill with a new weapon, it plays the suryasounds in assets. it should only be heard by the player that got the new weapon. this asset should be baked into the dll. 
+
+when not paused, there should be a box in the top, middle of the right, that has the weapon kill percentages, and the round and take info. the lines for these stats should be the same as the one in the pause menu.
+
+
+
+
+
+
+
+
+
+
+OTHER BUG
