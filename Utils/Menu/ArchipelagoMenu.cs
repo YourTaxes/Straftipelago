@@ -34,6 +34,9 @@ internal static partial class ArchipelagoMenu
     // How often a roulette roll produces a weapon the player has not got a kill with yet.
     public static ConfigEntry<int> NewWeaponChance { get; private set; }
 
+    // How loud the cue that plays when the multiworld sends an item is, as a percent.
+    public static ConfigEntry<int> ItemReceivedSoundVolume { get; private set; }
+
     // Whether the player accepts the challenge.
     public static ConfigEntry<bool> GreenMode { get; private set; }
 

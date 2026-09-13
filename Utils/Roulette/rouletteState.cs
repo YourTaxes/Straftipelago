@@ -292,6 +292,14 @@ public partial class RouletteState
     }
 
     /// <summary>
+    /// The weapon the room unlocked most recently, as the game displays it, or null before the
+    /// first one arrives. What the overlay's Last unlocked box names. Only the live receipt path
+    /// writes it, so a pool rebuild cannot rewrite it - but the room's replay on connect does,
+    /// which is what carries the name across a restart.
+    /// </summary>
+    public string LastUnlockedWeapon { get; private set; }
+
+    /// <summary>
     /// Records an unlock the room granted and applies it, now if the pool is up and on the next
     /// <see cref="Reset"/> otherwise. Must be called on the main thread.
     /// </summary>
@@ -301,6 +309,10 @@ public partial class RouletteState
         if (string.IsNullOrEmpty(weaponName)) return false;
 
         receivedWeaponNames.Add(weaponName);
+
+        // Out of a match the name cannot be resolved to a prefab, so the room's own spelling
+        // stands in rather than the box going blank.
+        LastUnlockedWeapon = DisplayNameOf(ResolveByAnyName(weaponName)) ?? weaponName;
 
         // Not EnsureInitialized: out of a match SpawnerManager has no weapons, and building the
         // pool off an empty list would set initialized and leave it that way. The name is

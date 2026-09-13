@@ -48,6 +48,13 @@ public partial class ArchipelagoClient
     private volatile bool acceptOneShotItems;
 
     /// <summary>
+    /// Whether an item arriving now is a new one rather than one the room is replaying on
+    /// connect. The same latch <see cref="AllowOneShot"/> gates the traps on, exposed because the
+    /// sound that announces an item is one-shot whatever the item is.
+    /// </summary>
+    internal static bool AcceptingNewItems => Plugin.ArchipelagoClient?.acceptOneShotItems ?? false;
+
+    /// <summary>
     /// Takes one item off the helper's queue and applies it.
     /// </summary>
     private void OnItemReceived(ReceivedItemsHelper helper)
@@ -96,6 +103,10 @@ public partial class ArchipelagoClient
     private void ApplyReceivedItem(string itemName, string sender)
     {
         if (string.IsNullOrEmpty(itemName)) return;
+
+        // Every item, whatever the branch below makes of it. Queued because the cue touches
+        // Unity, and it judges the connect replay for itself.
+        MainThreadActions.Enqueue(ItemReceivedSound.Play);
 
         switch (itemName)
         {

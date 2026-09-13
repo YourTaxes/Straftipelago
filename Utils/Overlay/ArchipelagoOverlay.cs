@@ -1,4 +1,5 @@
 using HarmonyLib;
+using Straftapelago.Finnegan_McD.org.Archipelago;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -62,6 +63,10 @@ internal class ArchipelagoOverlay : MonoBehaviour
         DontDestroyOnLoad(host);
         instance = host.AddComponent<ArchipelagoOverlay>();
 
+        // This object is the only one the mod owns that survives a scene load, so the cue's
+        // AudioSource lives on it and follows it whenever it is re-created.
+        ItemReceivedSound.AttachTo(instance);
+
         Plugin.BepinLogger.LogInfo(
             $"[Overlay] host created (#{spawnCount}) after {reason}, frame={Time.frameCount}");
     }
@@ -106,13 +111,26 @@ internal class ArchipelagoOverlay : MonoBehaviour
         if (InSettingsMenu()) return;
 
         // Above the pause gate, because a countdown is a trap running against the player in
-        // real time and one they could only read by pausing would be no countdown at all.
+        // real time and one they could only read by pausing would be no countdown at all. The
+        // Last unlocked box sits in the same row, and is news whether or not one is running.
         OverlayPanels.DrawCountdowns();
+        OverlayPanels.DrawLastWeapon();
 
         // The pause gate for the other two panels, here rather than in each of them: they are
         // one stacked block as far as the player is concerned. PauseManager.Instance is
         // null-checked rather than assumed.
-        if (PauseManager.Instance == null || !PauseManager.Instance.pause) return;
+        if (PauseManager.Instance == null || !PauseManager.Instance.pause)
+        {
+            // The same numbers as the paused progress block, kept on screen during play. Only in
+            // a match, so it does not sit over the main menu, and only while connected to a
+            // room, since offline it has no goals to report against.
+            if (PauseManager.Instance != null && ArchipelagoClient.Authenticated)
+            {
+                OverlayPanels.DrawLiveStats();
+            }
+
+            return;
+        }
 
         OverlayPanels.DrawSessionProgress();
         OverlayPanels.DrawObtainedWeapons();

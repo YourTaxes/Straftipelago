@@ -35,10 +35,58 @@ public partial class RouletteState
         return preferred.Count > 0 ? preferred : other;
     }
 
+    // The slots the current draw is being made from. Fields rather than locals because SelfTest
+    // rebuilds them thousands of times in a row.
+    private readonly List<GameObject> individualSlots = new();
+    private readonly List<GameObject> groupedSlots = new();
+
+    /// <summary>
+    /// Splits a pool into the slots a draw picks between: one each for the weapons that carry an
+    /// Archipelago check, and a single shared one for every weapon that carries none. Those are
+    /// seeded into hasKill_Items whatever the player has done, so holding a slot each would let a
+    /// handful of stun weapons crowd out the whole pool early in a seed.
+    /// </summary>
+    /// <returns>How many slots the draw picks between.</returns>
+    private int BuildSlots(List<GameObject> pool)
+    {
+        individualSlots.Clear();
+        groupedSlots.Clear();
+
+        foreach (GameObject weapon in pool)
+        {
+            if (weapon == null) continue;
+
+            if (weaponsWithoutChecks.Contains(weapon)) groupedSlots.Add(weapon);
+            else individualSlots.Add(weapon);
+        }
+
+        return individualSlots.Count + (groupedSlots.Count > 0 ? 1 : 0);
+    }
+
+    /// <summary>
+    /// One uniform draw over a pool's slots, then a second uniform draw inside the shared slot
+    /// when that is the one that came up. Shared with <see cref="SelfTest"/> for the same reason
+    /// <see cref="ChoosePool"/> is.
+    /// </summary>
+    private GameObject DrawFrom(List<GameObject> pool, out bool drewGroup, out int slotCount)
+    {
+        slotCount = BuildSlots(pool);
+        drewGroup = false;
+
+        if (slotCount == 0) return null;
+
+        int slot = UnityEngine.Random.Range(0, slotCount);
+        if (slot < individualSlots.Count) return individualSlots[slot];
+
+        drewGroup = true;
+        return groupedSlots[UnityEngine.Random.Range(0, groupedSlots.Count)];
+    }
+
     /// <summary>
     /// The roll. New Weapon Chance decides whether this is a weapon the player has never killed
-    /// with, then the draw inside that list is uniform. Destroyed entries are compacted out
-    /// first, and reported, because one would otherwise produce a roll that spawns nothing.
+    /// with, then the draw inside that list is uniform over its slots. Destroyed entries are
+    /// compacted out first, and reported, because one would otherwise produce a roll that spawns
+    /// nothing.
     /// </summary>
     public GameObject Roll(int rollId)
     {
@@ -50,16 +98,14 @@ public partial class RouletteState
         List<GameObject> pool = ChoosePool(out bool wantNew);
         bool drewNew = pool == obtained_Items;
 
-        int poolCount = pool.Count;
-        if (poolCount == 0)
+        GameObject prefab = DrawFrom(pool, out bool drewGroup, out int slotCount);
+        if (prefab == null)
         {
             DiagLog.RR(rollId, "roll",
-                $"poolCount=0 wantNew={wantNew} compactedNulls={compactedNulls} — nothing to roll");
+                $"slotCount=0 wantNew={wantNew} compactedNulls={compactedNulls} — nothing to roll");
             return null;
         }
 
-        int index = UnityEngine.Random.Range(0, poolCount);
-        GameObject prefab = pool[index];
         NetworkObject nob = prefab.GetComponent<NetworkObject>();
 
         // prefabId/collectionId are logged here AND on the server's spawn so the two can be
@@ -69,7 +115,8 @@ public partial class RouletteState
             $"newChance={ArchipelagoMenu.NewWeaponChance.Value} wantNew={wantNew} " +
             $"drewFrom={(drewNew ? "obtained_Items" : "hasKill_Items")} " +
             $"obtained={obtained_Items.Count} hasKill={hasKill_Items.Count} " +
-            $"poolCount={poolCount} index={index} prefab={prefab.name} " +
+            $"poolCount={pool.Count} slotCount={slotCount} drewGroup={drewGroup} " +
+            $"prefab={prefab.name} " +
             $"prefabId={(nob == null ? "NO-NETWORKOBJECT" : nob.PrefabId.ToString())} " +
             $"collectionId={(nob == null ? "n/a" : nob.SpawnableCollectionId.ToString())} " +
             $"compactedNulls={compactedNulls}");
@@ -99,9 +146,10 @@ public partial class RouletteState
         {
             List<GameObject> pool = ChoosePool(out bool wantNew);
             if (wantNew) newBranchDraws++;
-            if (pool.Count == 0) continue;
 
-            GameObject picked = pool[UnityEngine.Random.Range(0, pool.Count)];
+            GameObject picked = DrawFrom(pool, out _, out _);
+            if (picked == null) continue;
+
             hits.TryGetValue(picked, out int count);
             hits[picked] = count + 1;
         }
@@ -118,31 +166,48 @@ public partial class RouletteState
         // Fixed column widths, so a skewed weapon is visible by scanning down a column. The
         // name column is sized to the longest name across both lists.
         const string listColumn = "has kill";
+        const string slotColumn = "shared";
         int nameWidth = Math.Max("weapon".Length, LongestName(obtained_Items, LongestName(hasKill_Items, 0)));
         int hitsWidth = Math.Max("hits".Length, iterations.ToString().Length);
 
         report.AppendLine(
-            $"  {"list".PadRight(listColumn.Length)}  {"weapon".PadRight(nameWidth)}  " +
+            $"  {"list".PadRight(listColumn.Length)}  {"slot".PadRight(slotColumn.Length)}  " +
+            $"{"weapon".PadRight(nameWidth)}  " +
             $"{"hits".PadLeft(hitsWidth)}  {"actual".PadLeft(8)}  {"expected".PadLeft(8)}  {"off by".PadLeft(8)}");
 
         void ReportList(List<GameObject> pool, string label, double listShare)
         {
-            for (int index = 0; index < pool.Count; index++)
+            // The same split the draw itself makes, so the expected column describes the code
+            // being tested rather than a second reading of it.
+            int slotCount = BuildSlots(pool);
+            if (slotCount == 0) return;
+
+            // Every weapon in the shared slot splits that one slot's odds between them.
+            double groupedShare = groupedSlots.Count == 0
+                ? 0d
+                : listShare / slotCount / groupedSlots.Count;
+
+            ReportSlot(individualSlots, "own", listShare / slotCount);
+            ReportSlot(groupedSlots, slotColumn, groupedShare);
+
+            void ReportSlot(List<GameObject> weapons, string slotLabel, double weaponShare)
             {
-                GameObject weapon = pool[index];
-                double expected = listShare / pool.Count * iterations;
-                hits.TryGetValue(weapon, out int observed);
+                foreach (GameObject weapon in weapons)
+                {
+                    double expected = weaponShare * iterations;
+                    hits.TryGetValue(weapon, out int observed);
 
-                double deviation = expected > 0d ? Math.Abs(observed - expected) / expected * 100d : 0d;
-                if (deviation > worstDeviation) worstDeviation = deviation;
+                    double deviation = expected > 0d ? Math.Abs(observed - expected) / expected * 100d : 0d;
+                    if (deviation > worstDeviation) worstDeviation = deviation;
 
-                report.AppendLine(
-                    $"  {label.PadRight(listColumn.Length)}  " +
-                    $"{(weapon == null ? "null" : weapon.name).PadRight(nameWidth)}  " +
-                    $"{observed.ToString().PadLeft(hitsWidth)}  " +
-                    $"{$"{observed / (double)iterations * 100d:F2}%".PadLeft(8)}  " +
-                    $"{$"{listShare / pool.Count * 100d:F2}%".PadLeft(8)}  " +
-                    $"{$"{deviation:F2}%".PadLeft(8)}");
+                    report.AppendLine(
+                        $"  {label.PadRight(listColumn.Length)}  {slotLabel.PadRight(slotColumn.Length)}  " +
+                        $"{(weapon == null ? "null" : weapon.name).PadRight(nameWidth)}  " +
+                        $"{observed.ToString().PadLeft(hitsWidth)}  " +
+                        $"{$"{observed / (double)iterations * 100d:F2}%".PadLeft(8)}  " +
+                        $"{$"{weaponShare * 100d:F2}%".PadLeft(8)}  " +
+                        $"{$"{deviation:F2}%".PadLeft(8)}");
+                }
             }
         }
 
@@ -152,7 +217,9 @@ public partial class RouletteState
         Plugin.BepinLogger.LogInfo(
             $"[RouletteState] distribution self-test: {iterations} draws, " +
             $"New Weapon Chance={ArchipelagoMenu.NewWeaponChance.Value}% " +
-            $"over {newCount} no-kill and {killCount} has-kill weapons.{Environment.NewLine}" +
+            $"over {newCount} no-kill and {killCount} has-kill weapons, " +
+            $"{weaponsWithoutChecks.Count} of which carry no check and share one " +
+            $"slot.{Environment.NewLine}" +
             $"  branch split: {newBranchDraws / (double)iterations * 100d:F2}% rolled the new " +
             $"branch, expected {ArchipelagoMenu.NewWeaponChance.Value:F2}%" +
             $"{(newCount == 0 || killCount == 0 ? " (one list is empty, so every draw falls back to the other)" : "")}" +

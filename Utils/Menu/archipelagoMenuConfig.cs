@@ -56,6 +56,17 @@ internal static partial class ArchipelagoMenu
             "that is the trap, not a modifier, but you will pay the full price for every lean " +
             "it puts you in.");
 
+        // An int percent rather than a 0-1 float for the same reason New Weapon Chance is one:
+        // AcceptableValueRange over an int is what Mod Menu draws as a slider. Read fresh on
+        // every play, so a change to it is heard on the next item without a restart.
+        ItemReceivedSoundVolume = config.Bind("Audio", "Item Received Sound Volume",
+            80,
+            new ConfigDescription(
+                "How loud the sound that plays when the multiworld sends you an item is - any " +
+                "item: a weapon, a trap or a buff - as a percent of full volume.\n\n" +
+                "Only you hear it. 0 silences it.",
+                new AcceptableValueRange<int>(0, 100)));
+
         GreenMode = config.Bind("Green Mode", "Green Mode", false,
             "Challenge me in Green Mode.");
 
@@ -106,7 +117,7 @@ internal static partial class ArchipelagoMenu
         // Only the activating player's copy of this is used: the number travels to the rest of
         // the lobby in the Mycelium message, so everyone counts the same countdown down.
         MadeInHeavenSeconds = config.Bind("Traps", "Made in Heaven Seconds",
-            60,
+            30,
             new ConfigDescription(
                 "How many seconds Made in Heaven runs for once it is activated. A second one " +
                 "does not add to the first and instead it replaces it, and the countdown restarts at this " +
