@@ -46,6 +46,15 @@ public class Plugin : BaseUnityPlugin
     public static ArchipelagoClient ArchipelagoClient;
     public static GameObject RouletteItemPrefab;
 
+    // The roulette's weapon logo, from the same bundle as the prefab. Shown on the "available"
+    // screen of every item dispenser in place of the vanilla gun icon; see
+    // ItemDispenserStartPatch.
+    public static Sprite WeaponLogoSprite;
+
+    // The cue for an item the multiworld has just sent, from the same bundle. Unity built the
+    // clip at bundle time, so it arrives decoded and ready; ItemReceivedSound only plays it.
+    public static AudioClip ItemReceivedClip;
+
     // The local player's roulette pools, created once in Awake and never replaced: the roulette
     // patches read it for the roll and the pickup rules, kill detection for the first-kill
     // checks. A plain C# object rather than a MonoBehaviour, since it has no per-frame work and
@@ -109,6 +118,20 @@ public class Plugin : BaseUnityPlugin
                             // spawns is instantiated from this object, so a colour pass and a
                             // field write here reach all of them without per-instance work.
                             RouletteItemPrefabSetup.Apply(RouletteItemPrefab);
+                        }
+
+                        WeaponLogoSprite = bundle.LoadAsset<Sprite>("weapon_logo");
+                        if (WeaponLogoSprite == null)
+                        {
+                            BepinLogger.LogError("Asset 'weapon_logo' not found in bundle. Assets present: " +
+                                string.Join(", ", bundle.GetAllAssetNames()));
+                        }
+
+                        ItemReceivedClip = bundle.LoadAsset<AudioClip>("surya_noise");
+                        if (ItemReceivedClip == null)
+                        {
+                            BepinLogger.LogError("Asset 'surya_noise' not found in bundle. Assets present: " +
+                                string.Join(", ", bundle.GetAllAssetNames()));
                         }
                     }
                     else

@@ -6,26 +6,6 @@ using UnityEngine;
 namespace Straftapelago.Finnegan_McD.org.Patches;
 
 /// <summary>
-/// Replaces every item spawner's item with the Roulette Item, on the server. Also a
-/// last-resort registration point for the roulette prefab: the real one is
-/// NetworkManager.Awake, and this call normally finds the work already done.
-/// </summary>
-[HarmonyPatch(typeof(ItemSpawner), "Start")]
-public class ItemSpawnerStartPatch
-{
-    static void Prefix(ItemSpawner __instance)
-    {
-        RoulettePrefabRegistration.EnsureRegistered("ItemSpawner.Start");
-
-        if (!FishNet.InstanceFinder.IsServer) return;
-
-        // The prefab's own fields were set up once at load (see RouletteItemPrefabSetup), so
-        // swapping the reference is the whole of the per-spawner work.
-        __instance.itemToSpawn = Plugin.RouletteItemPrefab;
-    }
-}
-
-/// <summary>
 /// The scene assets the Roulette Item borrows from the game, resolved once per session. Each
 /// sweep of Resources.FindObjectsOfTypeAll walks every loaded object, and a round spawns one
 /// Roulette Item per spawner, so resolving per instance would repeat that walk many times at
