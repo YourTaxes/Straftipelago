@@ -6,7 +6,7 @@ when deathlink happens, the line should be "<player that died> ruined it for <st
 
 sometimes the client's straftat terminal says "Cannot complete action because server is not active. This may also occur if the object is not yet initialized or if it does not contain a NetworkObject component. This message may be disabled by setting the Logging field in your attribute to LoggingType.Off"
 
-sometimes when the client player walks and makes footstep noises, this comes up in the the terminal "[Warning: Unity Log] Cannot complete action because server is not active. This may also occur if the object is not yet initialized or if it does not contain a NetworkObject component. This message may be disabled by setting the Logging field in your attribute to LoggingType.Off"
+base game - sometimes when the client player walks and makes footstep noises, this comes up in the the terminal "[Warning: Unity Log] Cannot complete action because server is not active. This may also occur if the object is not yet initialized or if it does not contain a NetworkObject component. This message may be disabled by setting the Logging field in your attribute to LoggingType.Off"
 
 fixed- was a base game bug the whole time - when a player recieves the death item, and they are avctively using the propeller item, the propeller item never stops making noise
 
