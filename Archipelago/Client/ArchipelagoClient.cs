@@ -45,8 +45,11 @@ public partial class ArchipelagoClient
         if (Authenticated || attemptingConnection) return;
 
         // Shut before the socket is opened, so the inventory the room is about to replay cannot
-        // set off a trap or a buff that was spent long ago. ApplySlotSettings reopens it.
+        // set off a trap or a buff that was spent long ago. Reopened by EnsureRoom the moment
+        // the replay proves to be for a room this process already has a watermark for, and by
+        // ApplySlotSettings otherwise.
         acceptOneShotItems = false;
+        ResetReplayTally();
 
         try
         {
@@ -99,7 +102,10 @@ public partial class ArchipelagoClient
                         ItemsHandlingFlags.AllItems,
                         new Version(APVersion),
                         password: ServerData.Password,
-                        requestSlotData: ServerData.NeedSlotData
+                        // Every time, not only when none is held: a login can land in a
+                        // different room from the last one, and its settings must not be
+                        // inherited from there.
+                        requestSlotData: true
                     )));
         }
         catch (Exception e)
@@ -122,6 +128,11 @@ public partial class ArchipelagoClient
         {
             var success = (LoginSuccessful)result;
 
+            // Before the checked locations go out below: a room change must clear them first,
+            // or the previous room's ids would be sent to this one. Usually a no-op by now, as
+            // the replay's first item has already made this call on the websocket thread.
+            EnsureRoom(session.RoomState.Seed);
+
             ServerData.SetupSession(success.SlotData, session.RoomState.Seed);
             Authenticated = true;
 
@@ -135,10 +146,11 @@ public partial class ArchipelagoClient
 
             ArchipelagoConsole.LogMessage(outText);
 
-            // The room's answer to this slot's YAML. One call per line, because each becomes
-            // its own chat message.
+            // The room's answer to this slot's YAML, into LogOutput.log only: a dozen chat lines
+            // on connect each instantiate a UI prefab and relayout the panel, and this is a
+            // record for reading after the fact, not news for the player.
             foreach (string line in ServerData.DescribeSlotData())
-                ArchipelagoConsole.LogMessage(line);
+                Plugin.BepinLogger.LogInfo(line);
 
             ApplySlotSettings();
         }
@@ -186,8 +198,11 @@ public partial class ArchipelagoClient
 
             // Last of all, and the reason this runs on a frame: everything the room replayed on
             // connect has arrived and been folded into the pool by now, so a trap or a Health
-            // from here on is a new one.
+            // from here on is a new one. Already open when EnsureRoom trusted the watermark.
             acceptOneShotItems = true;
+
+            // One line for the whole replay, in place of one per item.
+            ReportReplayTally();
 
             // After the rebuild, so this sees the checks the room has already recorded for this
             // slot and a player who reconnects having met the weapon goal has met it now too.
@@ -202,8 +217,12 @@ public partial class ArchipelagoClient
     public void Disconnect()
     {
         Plugin.BepinLogger.LogDebug("disconnecting from server...");
-        session?.Socket.DisconnectAsync();
+
+        // Nulled before the socket is told, so the SocketClosed callback this raises finds no
+        // live session and does not report the close as a lost connection.
+        ArchipelagoSession closing = session;
         session = null;
+        closing?.Socket.DisconnectAsync();
         locationIdsByName = null;
         Authenticated = false;
         ready = false;
@@ -327,9 +346,14 @@ public partial class ArchipelagoClient
         ArchipelagoConsole.LogMessage(message);
     }
 
-    /// <summary>Cleans up after the connection drops.</summary>
+    /// <summary>
+    /// Cleans up after the connection drops. Silent when there is no session to lose, which is
+    /// what a close the mod itself asked for looks like by the time this fires.
+    /// </summary>
     private void OnSessionSocketClosed(string reason)
     {
+        if (session == null) return;
+
         Plugin.BepinLogger.LogError($"Connection to Archipelago lost: {reason}");
         Disconnect();
     }

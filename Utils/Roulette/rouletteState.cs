@@ -308,6 +308,18 @@ public partial class RouletteState
     public string LastUnlockedWeapon { get; private set; }
 
     /// <summary>
+    /// Drops everything the previous room granted, ahead of a login that landed in a different
+    /// one: the ledger the next <see cref="Reset"/> replays, and the name the overlay shows.
+    /// The three lists are left to that Reset, which rebuilds them from the new room's items.
+    /// Must be called on the main thread, ahead of the new room's first receipt.
+    /// </summary>
+    public void ForgetRoom()
+    {
+        receivedWeaponNames.Clear();
+        LastUnlockedWeapon = null;
+    }
+
+    /// <summary>
     /// Records an unlock the room granted and applies it, now if the pool is up and on the next
     /// <see cref="Reset"/> otherwise. Must be called on the main thread.
     /// </summary>

@@ -33,14 +33,40 @@ public class ArchipelagoData
     public List<long> CheckedLocations;
 
     /// <summary>
-    /// The room's seed, for checking that a loaded session belongs to the room it is connecting
-    /// to.
+    /// The seed of the room the item watermark, the checked locations and the slot data below
+    /// belong to. Null until the first login. <see cref="EnterRoom"/> compares it against the
+    /// room a new login has landed in.
     /// </summary>
     private string seed;
 
     private Dictionary<string, object> slotData;
 
-    public bool NeedSlotData => slotData == null;
+    /// <summary>
+    /// Points the per-room state at <paramref name="roomSeed"/>, dropping everything that
+    /// belonged to a different room: the item watermark, so the new room's replay is not
+    /// skipped as already applied, and the checked locations, so the old room's ids are not
+    /// sent to the new one. Thread-safe, since the first call for a connect can come from the
+    /// websocket thread's first item or from the login handler's ThreadPool thread, whichever
+    /// runs first.
+    /// </summary>
+    /// <returns>True when this is the room the state already belonged to.</returns>
+    public bool EnterRoom(string roomSeed)
+    {
+        lock (this)
+        {
+            if (seed == roomSeed) return true;
+
+            bool firstRoom = seed == null;
+            seed = roomSeed;
+
+            if (firstRoom) return false;
+
+            Index = 0;
+            CheckedLocations.Clear();
+            slotData = null;
+            return false;
+        }
+    }
 
     /// <summary>
     /// Whether the room wants this slot linked to the multiworld's deaths. Read out of slot data
@@ -176,11 +202,11 @@ public class ArchipelagoData
     /// <param name="roomSeed">Seed name of this session.</param>
     public void SetupSession(Dictionary<string, object> roomSlotData, string roomSeed)
     {
-        // Kept, not overwritten, when the room sends nothing: a reconnect asks for slot data
-        // only when there is none, so the second login legitimately answers null. Every reader
-        // below then falls back to its current value.
+        // Every login asks for slot data, so the room a login lands in is the room these
+        // settings describe. Kept rather than overwritten on a null answer all the same, so
+        // every reader below has something to fall back to.
+        EnterRoom(roomSeed);
         if (roomSlotData != null) slotData = roomSlotData;
-        seed = roomSeed;
 
         DeathLink = ReadToggle(slotData, DeathLinkKey, DeathLink);
         DeathsPerLink = ReadRange(slotData, DeathsPerLinkKey, DeathsPerLink,

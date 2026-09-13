@@ -1,3 +1,4 @@
+using Archipelago.MultiClient.Net;
 using Archipelago.MultiClient.Net.Helpers;
 using Straftapelago.Finnegan_McD.org.Patches;
 using Straftapelago.Finnegan_McD.org.Utils;
@@ -41,9 +42,10 @@ public partial class ArchipelagoClient
     /// is only replaying on connect. The four filler items are events, not possessions, so
     /// replaying them would kill the player for a trap that was spent rounds ago; the
     /// <see cref="ArchipelagoData.Index"/> watermark does not cover it, because that counter
-    /// starts at zero in a fresh process. Opened by the queued action in ApplySlotSettings,
-    /// which is the first main-thread frame after the login completed. volatile because it is
-    /// written on Unity's main thread and read on the websocket thread.
+    /// starts at zero in a fresh process. Opened by <see cref="EnsureRoom"/> as soon as a
+    /// connect proves to be a rejoin of a room whose watermark this process already holds, and
+    /// otherwise by the queued action in ApplySlotSettings, which is the first main-thread
+    /// frame after the login completed. volatile because it is written on both threads.
     /// </summary>
     private volatile bool acceptOneShotItems;
 
@@ -53,6 +55,70 @@ public partial class ArchipelagoClient
     /// sound that announces an item is one-shot whatever the item is.
     /// </summary>
     internal static bool AcceptingNewItems => Plugin.ArchipelagoClient?.acceptOneShotItems ?? false;
+
+    /// <summary>
+    /// What the replay on connect amounted to, for the one chat line that stands in for a line
+    /// per item. Counted on the websocket thread, read on the main thread after the replay.
+    /// </summary>
+    private int replayedAlreadyApplied;
+    private int replayedWeapons;
+    private int replayedSpentOneShots;
+
+    private void ResetReplayTally()
+    {
+        replayedAlreadyApplied = 0;
+        replayedWeapons = 0;
+        replayedSpentOneShots = 0;
+    }
+
+    /// <summary>
+    /// Prints the replay's tally to the chat, if there was one. Main thread, after the replay.
+    /// </summary>
+    private void ReportReplayTally()
+    {
+        int total = replayedAlreadyApplied + replayedWeapons + replayedSpentOneShots;
+        if (total == 0) return;
+
+        ArchipelagoConsole.LogMessage(
+            $"The room replayed {total} item(s): {replayedWeapons} weapon unlock(s) applied, " +
+            $"{replayedSpentOneShots} spent trap(s)/buff(s) skipped, {replayedAlreadyApplied} already applied.");
+        ResetReplayTally();
+    }
+
+    /// <summary>
+    /// Makes the per-room state match the room this connect landed in. A different seed drops
+    /// the last room's watermark, ledger and lazer count; the same seed with a watermark already
+    /// on it means the process has seen this room's inventory before, so anything above the
+    /// watermark is new and a trap among it may go off at once - no need to wait for the
+    /// replay to finish. Called from the first item of every connect, on the websocket thread,
+    /// and from the login handler for a room that sends no items at all.
+    /// </summary>
+    private void EnsureRoom(string roomSeed)
+    {
+        lock (ServerData)
+        {
+            bool sameRoom = ServerData.EnterRoom(roomSeed);
+
+            if (!sameRoom)
+            {
+                Plugin.BepinLogger.LogInfo($"[Archipelago] entering room {roomSeed}; per-room state starts fresh.");
+                lazerTiersReceived = 0;
+
+                // Ahead of every action the new room's items will queue, so the ledger is empty
+                // by the time the first of them is granted.
+                MainThreadActions.Enqueue(() => Plugin.RouletteState?.ForgetRoom());
+                return;
+            }
+
+            if (ServerData.Index > 0 && !acceptOneShotItems)
+            {
+                Plugin.BepinLogger.LogInfo(
+                    $"[Archipelago] rejoined room {roomSeed} with {ServerData.Index} item(s) already applied; " +
+                    "anything newer goes off as it arrives.");
+                acceptOneShotItems = true;
+            }
+        }
+    }
 
     /// <summary>
     /// Takes one item off the helper's queue and applies it.
@@ -65,20 +131,32 @@ public partial class ArchipelagoClient
         // later receipt would pop an older one instead of its own.
         var receivedItem = helper.DequeueItem();
 
+        // RoomState is filled from the RoomInfo packet, which precedes every item, so the seed
+        // is known by now even when the login handler has not run yet.
+        ArchipelagoSession currentSession = session;
+        if (currentSession != null) EnsureRoom(currentSession.RoomState.Seed);
+
         // Already applied. The server replays the whole inventory on every connect, and this
         // watermark is what stops a reconnect re-granting it - which matters most for the items
         // that are not idempotent.
-        if (helper.Index <= ServerData.Index) return;
+        if (helper.Index <= ServerData.Index)
+        {
+            replayedAlreadyApplied++;
+            return;
+        }
 
         ServerData.Index++;
 
+        string line = $"RECIEVED {receivedItem.ItemDisplayName} (item id {receivedItem.ItemId}, {receivedItem.Flags}) " +
+            $"FROM {receivedItem.Player} playing {receivedItem.ItemGame} " +
+            $"AT {receivedItem.LocationDisplayName} (location id {receivedItem.LocationId})";
+
         // ArchipelagoConsole, not KillFeed: this callback runs on the websocket thread, and
         // KillFeed.Write instantiates a chat line straight away, which is a Unity call.
-        // LogMessage queues instead, and the overlay drains it on the main thread.
-        ArchipelagoConsole.LogMessage(
-            $"RECIEVED {receivedItem.ItemDisplayName} (item id {receivedItem.ItemId}, {receivedItem.Flags}) " +
-            $"FROM {receivedItem.Player} playing {receivedItem.ItemGame} " +
-            $"AT {receivedItem.LocationDisplayName} (location id {receivedItem.LocationId})");
+        // LogMessage queues instead, and the overlay drains it on the main thread. A replayed
+        // item goes to the log only; the tally reports the replay as one chat line.
+        if (acceptOneShotItems) ArchipelagoConsole.LogMessage(line);
+        else Plugin.BepinLogger.LogInfo(line);
 
         ApplyReceivedItem(receivedItem.ItemDisplayName, DescribeSender(receivedItem.Player));
     }
@@ -138,10 +216,12 @@ public partial class ArchipelagoClient
                 return;
 
             case ProgressiveLazerItem:
+                if (!acceptOneShotItems) replayedWeapons++;
                 MainThreadActions.Enqueue(GrantNextLazerTier);
                 return;
 
             default:
+                if (!acceptOneShotItems) replayedWeapons++;
                 MainThreadActions.Enqueue(() => Plugin.RouletteState?.ReceiveWeapon(itemName));
                 return;
         }
@@ -154,10 +234,11 @@ public partial class ArchipelagoClient
     {
         if (acceptOneShotItems) return true;
 
-        // Reported rather than dropped in silence: a trap that arrives and does nothing is
-        // otherwise indistinguishable from a broken trap.
-        ArchipelagoConsole.LogMessage(
-            $"Ignoring the {itemName} the room replayed on connect - it was already spent.");
+        // Logged rather than dropped in silence, and tallied for the chat: a trap that arrives
+        // and does nothing is otherwise indistinguishable from a broken trap.
+        replayedSpentOneShots++;
+        Plugin.BepinLogger.LogInfo(
+            $"[Archipelago] ignoring the {itemName} the room replayed on connect - it was already spent.");
         return false;
     }
 
