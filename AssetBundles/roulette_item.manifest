@@ -1,15 +1,15 @@
 ManifestFileVersion: 0
-CRC: 502490324
+CRC: 4131126272
 Hashes:
   AssetFileHash:
     serializedVersion: 2
-    Hash: 5feb8534f44e080b8e5ccfb867c410b7
+    Hash: 88d89cab3385b68fff896ddf5b3e56c5
   TypeTreeHash:
     serializedVersion: 2
     Hash: d08f34475d0be6116b0d485962d53537
   IncrementalBuildHash:
     serializedVersion: 2
-    Hash: 5feb8534f44e080b8e5ccfb867c410b7
+    Hash: 88d89cab3385b68fff896ddf5b3e56c5
 HashAppended: 0
 ClassTypes:
 - Class: 1
@@ -52,4 +52,5 @@ Assets:
 - Assets/Roulette_Item.prefab
 - Assets/surya_noise.ogg
 - Assets/S_WeaponOutline_00.shader
+- Assets/mod_logo.png
 Dependencies: []

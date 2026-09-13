@@ -55,6 +55,10 @@ public class Plugin : BaseUnityPlugin
     // clip at bundle time, so it arrives decoded and ready; ItemReceivedSound only plays it.
     public static AudioClip ItemReceivedClip;
 
+    // The icon Mod Menu shows next to this mod, from the same bundle. Loaded before
+    // ArchipelagoMenu.Install, which hands it to Mod Menu once and cannot be called again.
+    public static Sprite ModLogoSprite;
+
     // The local player's roulette pools, created once in Awake and never replaced: the roulette
     // patches read it for the roll and the pickup rules, kill detection for the first-kill
     // checks. A plain C# object rather than a MonoBehaviour, since it has no per-frame work and
@@ -72,30 +76,8 @@ public class Plugin : BaseUnityPlugin
             BepinLogger = Logger;
             BepinLogger.LogInfo("Straftapelago plugin loading.");
 
-            // First thing after the logger: this binds the config, and every later step here -
-            // and every patch - may read an entry. Once only, as Mod Menu's
-            // RegisterContentBuilder throws on a second call from this assembly.
-            try
-            {
-                ArchipelagoMenu.Install(Config);
-            }
-            catch (Exception e)
-            {
-                BepinLogger.LogError($"Failed to register the Mod Menu page: {e}");
-            }
-
-            // After the config, which Roll reads, and before PatchAll, so no patch can observe
-            // this as null. The constructor only allocates the lists: the weapons are filled in
-            // on the first PlayerPickup.Awake, because SpawnerManager is not up this early.
-            try
-            {
-                RouletteState = new RouletteState();
-            }
-            catch (Exception e)
-            {
-                BepinLogger.LogError($"Failed to create the roulette state: {e}");
-            }
-
+            // Before the config: Install hands Mod Menu the icon from this bundle, and the
+            // Mod Menu API only accepts it once per assembly.
             using (Stream stream = typeof(Plugin).Assembly.GetManifestResourceStream(
                 "Straftapelago.Finnegan_McD.org.AssetBundles.roulette_item"))
             {
@@ -127,6 +109,13 @@ public class Plugin : BaseUnityPlugin
                                 string.Join(", ", bundle.GetAllAssetNames()));
                         }
 
+                        ModLogoSprite = bundle.LoadAsset<Sprite>("mod_logo");
+                        if (ModLogoSprite == null)
+                        {
+                            BepinLogger.LogError("Asset 'mod_logo' not found in bundle. Assets present: " +
+                                string.Join(", ", bundle.GetAllAssetNames()));
+                        }
+
                         ItemReceivedClip = bundle.LoadAsset<AudioClip>("surya_noise");
                         if (ItemReceivedClip == null)
                         {
@@ -142,6 +131,31 @@ public class Plugin : BaseUnityPlugin
                     BepinLogger.LogError("Embedded resource 'roulette_item' not found");
                 }
             }
+
+            // This binds the config, and every later step here - and every patch - may read
+            // an entry. Once only, as Mod Menu's RegisterContentBuilder throws on a second call
+            // from this assembly.
+            try
+            {
+                ArchipelagoMenu.Install(Config);
+            }
+            catch (Exception e)
+            {
+                BepinLogger.LogError($"Failed to register the Mod Menu page: {e}");
+            }
+
+            // After the config, which Roll reads, and before PatchAll, so no patch can observe
+            // this as null. The constructor only allocates the lists: the weapons are filled in
+            // on the first PlayerPickup.Awake, because SpawnerManager is not up this early.
+            try
+            {
+                RouletteState = new RouletteState();
+            }
+            catch (Exception e)
+            {
+                BepinLogger.LogError($"Failed to create the roulette state: {e}");
+            }
+
             try
             {
                 ArchipelagoClient = new ArchipelagoClient();

@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using BepInEx;
 using BepInEx.Configuration;
 using HarmonyLib;
@@ -9,7 +8,6 @@ using ModMenu.Behaviours.OptionList.ValueControllers;
 using Straftapelago.Finnegan_McD.org.Archipelago;
 using TMPro;
 using UnityEngine;
-using Object = UnityEngine.Object;
 
 namespace Straftapelago.Finnegan_McD.org.Utils;
 
@@ -21,9 +19,6 @@ namespace Straftapelago.Finnegan_McD.org.Utils;
 internal static partial class ArchipelagoMenu
 {
     private const string Section = "Archipelago Login";
-
-    // The resource path to the archipelago logo asset.
-    private const string IconResource = "Straftapelago.Finnegan_McD.org.Assets.logo.png";
 
     // Whether a rolled two-handed weapon is placed in the player's hands or on the ground.
     public static ConfigEntry<bool> RolledTwoHandedWeaponsOverride { get; private set; }
@@ -87,53 +82,7 @@ internal static partial class ArchipelagoMenu
         ModMenuCustomisation.HideEntry(MadeInHeavenStartTickSeconds);
         ModMenuCustomisation.HideEntry(MadeInHeavenEndTickSeconds);
 
-        Sprite icon = LoadIcon();
-        if (icon != null) ModMenuCustomisation.SetPluginIcon(icon);
-    }
-
-    /// <summary>Loads the embedded logo as the sprite Mod Menu shows for this plugin.</summary>
-    private static Sprite LoadIcon()
-    {
-        try
-        {
-            using (Stream stream = typeof(ArchipelagoMenu).Assembly.GetManifestResourceStream(IconResource))
-            {
-                if (stream == null)
-                {
-                    Plugin.BepinLogger.LogWarning(
-                        $"Embedded resource '{IconResource}' not found; Mod Menu will show its default icon.");
-                    return null;
-                }
-
-                byte[] data = new byte[stream.Length];
-                stream.Read(data, 0, data.Length);
-
-                // Size and format are replaced wholesale by LoadImage, which reads them from
-                // the png itself, so the values here only have to be legal.
-                Texture2D texture = new Texture2D(2, 2, TextureFormat.RGBA32, false)
-                {
-                    hideFlags = HideFlags.HideAndDontSave,
-                };
-
-                if (!texture.LoadImage(data))
-                {
-                    Plugin.BepinLogger.LogWarning($"Could not decode '{IconResource}' as an image.");
-                    Object.Destroy(texture);
-                    return null;
-                }
-
-                Sprite sprite = Sprite.Create(texture,
-                    new Rect(0f, 0f, texture.width, texture.height), new Vector2(0.5f, 0.5f));
-                sprite.hideFlags = HideFlags.HideAndDontSave;
-                return sprite;
-            }
-        }
-        catch (Exception e)
-        {
-            // One missing icon must not take the whole page down with it.
-            Plugin.BepinLogger.LogError($"Failed to load the Mod Menu icon{Environment.NewLine}{e}");
-            return null;
-        }
+        if (Plugin.ModLogoSprite != null) ModMenuCustomisation.SetPluginIcon(Plugin.ModLogoSprite);
     }
 
     /// <summary>
