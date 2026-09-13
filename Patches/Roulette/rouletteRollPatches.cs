@@ -135,16 +135,32 @@ public class GrabPatches
         // Take the roulette out of hand first, whichever way this goes: it is about to be
         // despawned, and leaving it registered as objInHand while its layer changes is what
         // makes RightHandFix force-drop it.
-        if (useBothHands && otherHandOccupied)
+        //
+        // Both drop methods silently return while currentEnvironmentInteractable is set, which
+        // it is whenever the crosshair rests on a dispenser, lever or door. A roulette grabbed
+        // as it leaves a dispenser is grabbed with the dispenser still in view, so without
+        // clearing this the roulette would stay parented to the hand next to the rolled weapon,
+        // lerping in for the 0.65 s until its despawn. HandleInteractEnvironment rewrites the
+        // field every frame, so restoring it afterwards only keeps this frame consistent.
+        InteractEnvironment environmentInView = pp.currentEnvironmentInteractable;
+        pp.currentEnvironmentInteractable = null;
+        try
         {
-            // LEFT FIRST, unlike vanilla's order: RightHandDrop ends by calling SwitchWeapons
-            // when the left hand still holds something and there is no currentInteractable,
-            // which moves that item into the right hand instead of dropping it. A roll has no
-            // currentInteractable, so the right hand is emptied last.
-            pp.LeftHandDrop();
-            pp.RightHandDrop();
+            if (useBothHands && otherHandOccupied)
+            {
+                // LEFT FIRST, unlike vanilla's order: RightHandDrop ends by calling SwitchWeapons
+                // when the left hand still holds something and there is no currentInteractable,
+                // which moves that item into the right hand instead of dropping it. A roll has no
+                // currentInteractable, so the right hand is emptied last.
+                pp.LeftHandDrop();
+                pp.RightHandDrop();
+            }
+            else if (rightHand) pp.RightHandDrop(); else pp.LeftHandDrop();
         }
-        else if (rightHand) pp.RightHandDrop(); else pp.LeftHandDrop();
+        finally
+        {
+            pp.currentEnvironmentInteractable = environmentInView;
+        }
 
         if (branch == "ground") return;
 
