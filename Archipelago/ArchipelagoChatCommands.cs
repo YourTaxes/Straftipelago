@@ -1,4 +1,5 @@
-﻿using System.Reflection;
+﻿using System.Collections.Generic;
+using System.Reflection;
 using ChatCommands;
 using ChatCommands.Attributes;
 using Straftapelago.Finnegan_McD.org.Patches;
@@ -170,6 +171,100 @@ public static class ArchipelagoChatCommands
                 throw new CommandException(
                     $"Could not send {locationName}'s check. See LogOutput.log.");
         }
+    }
+
+    /// <summary>
+    /// Prints the three pools as the game names the weapons, so the state
+    /// <see cref="SetWeapons"/> is about to replace can be read off the chat first.
+    /// </summary>
+    [Command("ap_weapons", "List the weapons you have unlocked, the ones you have killed with, and the ones still locked.")]
+    public static void Weapons()
+    {
+        RouletteState roulette = RequireBuiltPools();
+
+        ArchipelagoConsole.LogMessage($"{Prompt}weapons");
+        ArchipelagoConsole.LogMessage(DescribePool("Unlocked, no kill yet", roulette.obtained_Items));
+        ArchipelagoConsole.LogMessage(DescribePool("Killed with", roulette.hasKill_Items));
+        ArchipelagoConsole.LogMessage(DescribePool("Locked", roulette.unowned_items));
+    }
+
+    /// <summary>
+    /// Replaces the unlocked set by hand, for repairing a pool the game has got wrong mid-match.
+    /// Only the weapons named are unlocked afterwards, all of them as never killed with, and
+    /// everything else is locked again. One quoted string, because of the lexer, so the names
+    /// are separated by commas. Local to this machine and undone by the next pool rebuild,
+    /// which happens on reconnect and on the O debug key.
+    /// </summary>
+    [Command("ap_setweapons", "Set exactly which weapons you have unlocked and clear your kills. Comma-separated, in one quote: /ap_setweapons 'Glock, Baseball Bat, Propeller'")]
+    public static void SetWeapons(string weapons = "")
+    {
+        var weaponNames = new List<string>();
+        foreach (string entry in (weapons ?? "").Split(','))
+        {
+            string weaponName = entry.Trim();
+            if (weaponName.Length > 0) weaponNames.Add(weaponName);
+        }
+
+        if (weaponNames.Count == 0)
+        {
+            throw new CommandException(
+                "Name at least one weapon, comma-separated in one quote: " +
+                "/ap_setweapons 'Glock, Baseball Bat'");
+        }
+
+        RouletteState roulette = RequireBuiltPools();
+
+        ArchipelagoConsole.LogMessage($"{Prompt}set weapons {string.Join(", ", weaponNames)}");
+
+        List<string> unresolved = roulette.SetUnlocked(weaponNames);
+
+        ArchipelagoConsole.LogMessage(DescribePool("Unlocked", roulette.obtained_Items));
+        ArchipelagoConsole.LogMessage($"{roulette.unowned_items.Count} weapon(s) locked, kill list cleared.");
+
+        // After the pools have been rewritten, not instead of it: the names that did resolve
+        // have already taken effect, and the player should see both halves of that.
+        if (unresolved.Count > 0)
+        {
+            throw new CommandException(
+                $"Not a weapon in the pool, so skipped: {string.Join(", ", unresolved)}. Both " +
+                "the name on the weapon and the prefab name work.");
+        }
+    }
+
+    /// <summary>
+    /// The pools, built. Both weapon commands need a real roster behind them, and the pools are
+    /// only populated the first time a player object comes up, so from the main menu there is
+    /// nothing to list or rewrite.
+    /// </summary>
+    private static RouletteState RequireBuiltPools()
+    {
+        RouletteState roulette = Plugin.RouletteState;
+        if (roulette == null)
+        {
+            throw new CommandException("The weapon pools do not exist yet.");
+        }
+
+        roulette.EnsureInitialized();
+        if (!roulette.IsInitialized)
+        {
+            throw new CommandException("The weapon pools are empty until a match has started.");
+        }
+
+        return roulette;
+    }
+
+    /// <summary>One chat line per pool: its label, its size, and the weapons as the game names them.</summary>
+    private static string DescribePool(string label, List<GameObject> pool)
+    {
+        if (pool.Count == 0) return $"{label} (0): none";
+
+        var names = new List<string>(pool.Count);
+        foreach (GameObject weapon in pool)
+        {
+            names.Add(weapon == null ? "<missing>" : RouletteState.DisplayNameOf(weapon));
+        }
+
+        return $"{label} ({pool.Count}): {string.Join(", ", names)}";
     }
 
     /// <summary>

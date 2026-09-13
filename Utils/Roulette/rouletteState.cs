@@ -383,6 +383,59 @@ public partial class RouletteState
     }
 
     /// <summary>
+    /// Whether <see cref="Reset"/> has built the pools off a real weapon roster. False from
+    /// the main menu, where SpawnerManager has no weapons to build from.
+    /// </summary>
+    public bool IsInitialized => initialized;
+
+    /// <summary>
+    /// Replaces the unlocked set with exactly the weapons named, for repairing a pool by hand
+    /// from the chat. Every named weapon goes to obtained_Items and hasKill_Items is emptied,
+    /// whatever kills were credited before - the room still holds its checks, and a rebuild
+    /// re-credits them. Every weapon not named is locked again, except a no-check weapon,
+    /// which is dropped from every list - the same state its toggle being off leaves it in,
+    /// off the roulette but still pickable. Local only: the next <see cref="Reset"/> rebuilds
+    /// the pools from the room's record.
+    /// </summary>
+    /// <returns>The names that matched no weapon in this build, in the order given.</returns>
+    public List<string> SetUnlocked(IEnumerable<string> weaponNames)
+    {
+        var unresolved = new List<string>();
+        var named = new HashSet<GameObject>();
+        foreach (string weaponName in weaponNames)
+        {
+            GameObject prefab = ResolveByAnyName(weaponName);
+            if (prefab == null) unresolved.Add(weaponName);
+            else named.Add(prefab);
+        }
+
+        // Rebuilt from the roster rather than from the three lists, so the result is in the
+        // same order a Reset leaves it in, and so a no-check weapon sitting in no list at all
+        // can still be named.
+        GameObject[] allWeapons = SpawnerManager.AllWeapons ?? Array.Empty<GameObject>();
+
+        suppressPoolLog = true;
+        unowned_items.Clear();
+        obtained_Items.Clear();
+        hasKill_Items.Clear();
+
+        foreach (GameObject weapon in allWeapons)
+        {
+            if (weapon == null) continue;
+
+            if (named.Contains(weapon)) obtained_Items.Add(weapon);
+            else if (!weaponsWithoutChecks.Contains(weapon)) unowned_items.Add(weapon);
+        }
+
+        suppressPoolLog = false;
+        LogPool();
+
+        // The share earned may have moved in either direction.
+        GoalTracker.Evaluate();
+        return unresolved;
+    }
+
+    /// <summary>
     /// Credits a first kill to every unlocked weapon that has not earned one yet, in one pass.
     /// Behind the L debug key, and local only - no check is sent, so the next
     /// <see cref="Reset"/> puts every weapon this moved back in obtained_Items.
