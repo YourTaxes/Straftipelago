@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using FishNet.Object;
 using UnityEngine;
@@ -35,51 +36,87 @@ public partial class RouletteState
         return preferred.Count > 0 ? preferred : other;
     }
 
-    // The slots the current draw is being made from. Fields rather than locals because SelfTest
-    // rebuilds them thousands of times in a row.
-    private readonly List<GameObject> individualSlots = new();
-    private readonly List<GameObject> groupedSlots = new();
-
     /// <summary>
-    /// Splits a pool into the slots a draw picks between: one each for the weapons that carry an
+    /// The slots one pool's draw picks between: one each for the weapons that carry an
     /// Archipelago check, and a single shared one for every weapon that carries none. Those are
     /// seeded into hasKill_Items whatever the player has done, so holding a slot each would let a
     /// handful of stun weapons crowd out the whole pool early in a seed.
     /// </summary>
-    /// <returns>How many slots the draw picks between.</returns>
-    private int BuildSlots(List<GameObject> pool)
+    private sealed class DrawSlots
     {
-        individualSlots.Clear();
-        groupedSlots.Clear();
+        public readonly List<GameObject> Individual = new();
+        public readonly List<GameObject> Grouped = new();
+
+        /// <summary>How many slots the draw picks between.</summary>
+        public int Count => Individual.Count + (Grouped.Count > 0 ? 1 : 0);
+    }
+
+    /// <summary>
+    /// The self-test's hit counts for one <see cref="DrawSlots"/>, indexed the same way its two
+    /// lists are.
+    /// </summary>
+    private sealed class SlotTally
+    {
+        public readonly int[] Individual;
+        public readonly int[] Grouped;
+
+        public SlotTally(DrawSlots slots)
+        {
+            Individual = new int[slots.Individual.Count];
+            Grouped = new int[slots.Grouped.Count];
+        }
+    }
+
+    // One per pool, so the self-test can build both once and then draw from them a hundred
+    // thousand times. Building walks the pool with a Unity null check and a HashSet lookup per
+    // weapon, each a native call, which at 65 weapons cost 200ms per self-test when it was done
+    // per draw. Roll builds the one it needs fresh every call, as the pools change between rolls.
+    private readonly DrawSlots newWeaponSlots = new();
+    private readonly DrawSlots earnedWeaponSlots = new();
+
+    /// <summary>Splits a pool into the slots a draw picks between.</summary>
+    private void BuildSlots(List<GameObject> pool, DrawSlots slots)
+    {
+        slots.Individual.Clear();
+        slots.Grouped.Clear();
 
         foreach (GameObject weapon in pool)
         {
             if (weapon == null) continue;
 
-            if (weaponsWithoutChecks.Contains(weapon)) groupedSlots.Add(weapon);
-            else individualSlots.Add(weapon);
+            if (weaponsWithoutChecks.Contains(weapon)) slots.Grouped.Add(weapon);
+            else slots.Individual.Add(weapon);
         }
-
-        return individualSlots.Count + (groupedSlots.Count > 0 ? 1 : 0);
     }
 
     /// <summary>
-    /// One uniform draw over a pool's slots, then a second uniform draw inside the shared slot
-    /// when that is the one that came up. Shared with <see cref="SelfTest"/> for the same reason
+    /// One uniform draw over the slots, then a second uniform draw inside the shared slot when
+    /// that is the one that came up. Shared with <see cref="SelfTest"/> for the same reason
     /// <see cref="ChoosePool"/> is.
     /// </summary>
-    private GameObject DrawFrom(List<GameObject> pool, out bool drewGroup, out int slotCount)
+    /// <param name="index">
+    /// Where the weapon sits in <see cref="DrawSlots.Grouped"/> when <paramref name="drewGroup"/>
+    /// is set and in <see cref="DrawSlots.Individual"/> otherwise, so the self-test can tally by
+    /// position instead of hashing the weapon. -1 when nothing was drawn.
+    /// </param>
+    private static GameObject DrawFromSlots(DrawSlots slots, out bool drewGroup, out int index)
     {
-        slotCount = BuildSlots(pool);
         drewGroup = false;
+        index = -1;
 
+        int slotCount = slots.Count;
         if (slotCount == 0) return null;
 
         int slot = UnityEngine.Random.Range(0, slotCount);
-        if (slot < individualSlots.Count) return individualSlots[slot];
+        if (slot < slots.Individual.Count)
+        {
+            index = slot;
+            return slots.Individual[slot];
+        }
 
         drewGroup = true;
-        return groupedSlots[UnityEngine.Random.Range(0, groupedSlots.Count)];
+        index = UnityEngine.Random.Range(0, slots.Grouped.Count);
+        return slots.Grouped[index];
     }
 
     /// <summary>
@@ -92,17 +129,28 @@ public partial class RouletteState
     {
         EnsureInitialized();
 
+        // Timed so the cost of a real roll is a number in the log next to the self-test's,
+        // which draws through this same path many thousands of times.
+        Stopwatch rollTimer = Stopwatch.StartNew();
+
         int compactedNulls = obtained_Items.RemoveAll(item => item == null)
             + hasKill_Items.RemoveAll(item => item == null);
 
         List<GameObject> pool = ChoosePool(out bool wantNew);
         bool drewNew = pool == obtained_Items;
 
-        GameObject prefab = DrawFrom(pool, out bool drewGroup, out int slotCount);
+        DrawSlots slots = drewNew ? newWeaponSlots : earnedWeaponSlots;
+        BuildSlots(pool, slots);
+        int slotCount = slots.Count;
+
+        GameObject prefab = DrawFromSlots(slots, out bool drewGroup, out _);
+        rollTimer.Stop();
+
         if (prefab == null)
         {
             DiagLog.RR(rollId, "roll",
-                $"slotCount=0 wantNew={wantNew} compactedNulls={compactedNulls} — nothing to roll");
+                $"slotCount=0 wantNew={wantNew} compactedNulls={compactedNulls} " +
+                $"rollMs={rollTimer.Elapsed.TotalMilliseconds:F3} — nothing to roll");
             return null;
         }
 
@@ -119,7 +167,7 @@ public partial class RouletteState
             $"prefab={prefab.name} " +
             $"prefabId={(nob == null ? "NO-NETWORKOBJECT" : nob.PrefabId.ToString())} " +
             $"collectionId={(nob == null ? "n/a" : nob.SpawnableCollectionId.ToString())} " +
-            $"compactedNulls={compactedNulls}");
+            $"compactedNulls={compactedNulls} rollMs={rollTimer.Elapsed.TotalMilliseconds:F3}");
 
         return prefab;
     }
@@ -131,6 +179,10 @@ public partial class RouletteState
     /// </summary>
     public void SelfTest(int iterations)
     {
+        // Compacted the way Roll compacts, so the slots built below match what a roll would see.
+        obtained_Items.RemoveAll(item => item == null);
+        hasKill_Items.RemoveAll(item => item == null);
+
         int newCount = obtained_Items.Count;
         int killCount = hasKill_Items.Count;
         if (newCount + killCount == 0)
@@ -139,20 +191,37 @@ public partial class RouletteState
             return;
         }
 
-        var hits = new Dictionary<GameObject, int>();
+        // Once each: the pools do not change while the test runs.
+        BuildSlots(obtained_Items, newWeaponSlots);
+        BuildSlots(hasKill_Items, earnedWeaponSlots);
+
+        // Tallied by position in the slot lists rather than in a dictionary keyed on the weapon,
+        // whose hash and equality both go through native calls.
+        var newHits = new SlotTally(newWeaponSlots);
+        var killHits = new SlotTally(earnedWeaponSlots);
         int newBranchDraws = 0;
+
+        // The draws, the report and the log write are timed separately, so a hitch on the K
+        // key can be pinned to one of the three rather than to the test as a whole.
+        Stopwatch drawTimer = Stopwatch.StartNew();
 
         for (int draw = 0; draw < iterations; draw++)
         {
             List<GameObject> pool = ChoosePool(out bool wantNew);
             if (wantNew) newBranchDraws++;
 
-            GameObject picked = DrawFrom(pool, out _, out _);
+            bool fromNew = pool == obtained_Items;
+            DrawSlots slots = fromNew ? newWeaponSlots : earnedWeaponSlots;
+            SlotTally tally = fromNew ? newHits : killHits;
+
+            GameObject picked = DrawFromSlots(slots, out bool drewGroup, out int index);
             if (picked == null) continue;
 
-            hits.TryGetValue(picked, out int count);
-            hits[picked] = count + 1;
+            (drewGroup ? tally.Grouped : tally.Individual)[index]++;
         }
+
+        drawTimer.Stop();
+        Stopwatch reportTimer = Stopwatch.StartNew();
 
         // What each weapon's share should be. When one list is empty the fallback sends every
         // draw to the other one, whatever the configured chance says.
@@ -175,34 +244,34 @@ public partial class RouletteState
             $"{"weapon".PadRight(nameWidth)}  " +
             $"{"hits".PadLeft(hitsWidth)}  {"actual".PadLeft(8)}  {"expected".PadLeft(8)}  {"off by".PadLeft(8)}");
 
-        void ReportList(List<GameObject> pool, string label, double listShare)
+        void ReportList(DrawSlots slots, SlotTally tally, string label, double listShare)
         {
-            // The same split the draw itself makes, so the expected column describes the code
-            // being tested rather than a second reading of it.
-            int slotCount = BuildSlots(pool);
+            // The same slots the draws were made from, so the expected column describes the
+            // code being tested rather than a second reading of it.
+            int slotCount = slots.Count;
             if (slotCount == 0) return;
 
             // Every weapon in the shared slot splits that one slot's odds between them.
-            double groupedShare = groupedSlots.Count == 0
+            double groupedShare = slots.Grouped.Count == 0
                 ? 0d
-                : listShare / slotCount / groupedSlots.Count;
+                : listShare / slotCount / slots.Grouped.Count;
 
-            ReportSlot(individualSlots, "own", listShare / slotCount);
-            ReportSlot(groupedSlots, slotColumn, groupedShare);
+            ReportSlot(slots.Individual, tally.Individual, "own", listShare / slotCount);
+            ReportSlot(slots.Grouped, tally.Grouped, slotColumn, groupedShare);
 
-            void ReportSlot(List<GameObject> weapons, string slotLabel, double weaponShare)
+            void ReportSlot(List<GameObject> weapons, int[] hits, string slotLabel, double weaponShare)
             {
-                foreach (GameObject weapon in weapons)
+                for (int index = 0; index < weapons.Count; index++)
                 {
                     double expected = weaponShare * iterations;
-                    hits.TryGetValue(weapon, out int observed);
+                    int observed = hits[index];
 
                     double deviation = expected > 0d ? Math.Abs(observed - expected) / expected * 100d : 0d;
                     if (deviation > worstDeviation) worstDeviation = deviation;
 
                     report.AppendLine(
                         $"  {label.PadRight(listColumn.Length)}  {slotLabel.PadRight(slotColumn.Length)}  " +
-                        $"{(weapon == null ? "null" : weapon.name).PadRight(nameWidth)}  " +
+                        $"{weapons[index].name.PadRight(nameWidth)}  " +
                         $"{observed.ToString().PadLeft(hitsWidth)}  " +
                         $"{$"{observed / (double)iterations * 100d:F2}%".PadLeft(8)}  " +
                         $"{$"{weaponShare * 100d:F2}%".PadLeft(8)}  " +
@@ -211,8 +280,12 @@ public partial class RouletteState
             }
         }
 
-        ReportList(obtained_Items, "no kill", newShare);
-        ReportList(hasKill_Items, listColumn, killShare);
+        ReportList(newWeaponSlots, newHits, "no kill", newShare);
+        ReportList(earnedWeaponSlots, killHits, listColumn, killShare);
+
+        reportTimer.Stop();
+        double drawMs = drawTimer.Elapsed.TotalMilliseconds;
+        Stopwatch logTimer = Stopwatch.StartNew();
 
         Plugin.BepinLogger.LogInfo(
             $"[RouletteState] distribution self-test: {iterations} draws, " +
@@ -220,11 +293,19 @@ public partial class RouletteState
             $"over {newCount} no-kill and {killCount} has-kill weapons, " +
             $"{weaponsWithoutChecks.Count} of which carry no check and share one " +
             $"slot.{Environment.NewLine}" +
+            $"  timing: drawMs={drawMs:F1} perDrawUs={drawMs * 1000d / iterations:F3} " +
+            $"reportMs={reportTimer.Elapsed.TotalMilliseconds:F1}{Environment.NewLine}" +
             $"  branch split: {newBranchDraws / (double)iterations * 100d:F2}% rolled the new " +
             $"branch, expected {ArchipelagoMenu.NewWeaponChance.Value:F2}%" +
             $"{(newCount == 0 || killCount == 0 ? " (one list is empty, so every draw falls back to the other)" : "")}" +
             $"{Environment.NewLine}  worst per-weapon deviation {worstDeviation:F2}%" +
             $"{Environment.NewLine}{report}");
+
+        logTimer.Stop();
+
+        // A line of its own: the write it measures has to finish before its cost is known.
+        Plugin.BepinLogger.LogInfo(
+            $"[RouletteState] self-test log write took logMs={logTimer.Elapsed.TotalMilliseconds:F1}");
     }
 
     /// <summary>Longest weapon name in a list, for sizing the self-test's name column.</summary>
