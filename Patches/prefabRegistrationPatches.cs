@@ -20,13 +20,6 @@ internal static class RoulettePrefabRegistration
     /// </summary>
     internal static void EnsureRegistered(NetworkManager networkManager, string reason)
     {
-        if (DiagnosticFlags.SkipPrefabRegistration)
-        {
-            DiagLog.Log("PrefabRegistration",
-                $"SKIPPED via DiagnosticFlags.SkipPrefabRegistration (reason={reason})");
-            return;
-        }
-
         NetworkObject rouletteNob = Plugin.RouletteItemPrefab == null
             ? null
             : Plugin.RouletteItemPrefab.GetComponent<NetworkObject>();
@@ -36,8 +29,8 @@ internal static class RoulettePrefabRegistration
         {
             // If this ever appears in a client log, that client is one entry short and every
             // roulette spawn it receives will fail to resolve.
-            DiagLog.Log("PrefabRegistration",
-                $"!! SKIPPED - table not mutated on this peer. {DiagLog.NetRoles()} reason={reason} " +
+            Plugin.BepinLogger.LogWarning(
+                $"[PrefabRegistration] table not mutated on this peer. {DiagLog.NetRoles()} reason={reason} " +
                 $"NetworkManager={(networkManager == null ? "NULL" : "ok")} " +
                 $"SpawnablePrefabs={(spawnables == null ? "NULL" : "ok")} " +
                 $"rouletteNob={(rouletteNob == null ? "NULL" : "ok")}");

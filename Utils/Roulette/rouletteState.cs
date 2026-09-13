@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Straftapelago.Finnegan_McD.org.Archipelago;
 using UnityEngine;
 
@@ -86,6 +85,15 @@ public partial class RouletteState
     private bool initialized;
 
     /// <summary>
+    /// Bumped on every change to the three lists. The overlay draws several times a frame and
+    /// keys its cached strings and counts on this, so it only rebuilds them when something
+    /// actually moved.
+    /// </summary>
+    public int Version { get; private set; }
+
+    private void MarkChanged() => Version++;
+
+    /// <summary>
     /// Builds the pool once and then never again. This is all PlayerPickup.Awake may call, as
     /// Awake fires for every player object every round.
     /// </summary>
@@ -151,11 +159,11 @@ public partial class RouletteState
         ReplayEarnedKills();
 
         suppressPoolLog = false;
+        MarkChanged();
 
         DiagLog.Log("RouletteState.Reset",
             $"{DiagLog.NetRoles()} AllWeapons={(allWeapons == null ? "NULL" : allWeapons.Length.ToString())} " +
             $"authenticated={ArchipelagoClient.Authenticated} received={receivedWeaponNames.Count} " +
-            $"checkedLocations={ArchipelagoClient.GetCheckedLocationNames().Count()} " +
             $"alwaysUnlocked={alwaysUnlocked.Count} " +
             $"unowned={unowned_items.Count} obtained={obtained_Items.Count} hasKill={hasKill_Items.Count}");
         LogPool();
@@ -346,6 +354,7 @@ public partial class RouletteState
 
         unowned_items.Remove(weapon);
         obtained_Items.Add(weapon);
+        MarkChanged();
         LogPool();
         return true;
     }
@@ -378,6 +387,7 @@ public partial class RouletteState
         }
 
         unowned_items.Clear();
+        MarkChanged();
         LogPool();
         return moved;
     }
@@ -428,6 +438,7 @@ public partial class RouletteState
         }
 
         suppressPoolLog = false;
+        MarkChanged();
         LogPool();
 
         // The share earned may have moved in either direction.
@@ -454,6 +465,7 @@ public partial class RouletteState
         }
 
         obtained_Items.Clear();
+        MarkChanged();
         LogPool();
 
         // The share earned has just jumped, and the weapon goal is a share of the roster.
@@ -472,17 +484,49 @@ public partial class RouletteState
     /// How many of this build's check-carrying weapons the player has earned the first-kill
     /// check for: hasKill_Items minus the weapons that carry no check.
     /// </summary>
-    public int EarnedWeaponCount => CountWeaponsWithChecks(hasKill_Items);
+    public int EarnedWeaponCount
+    {
+        get
+        {
+            RefreshCounts();
+            return earnedWeaponCount;
+        }
+    }
 
     /// <summary>
     /// How many weapons in this build can earn a first-kill check at all, which is the
     /// denominator <see cref="EarnedWeaponCount"/> is a fraction of. Zero until the pool has
     /// been built, which the caller has to check before dividing.
     /// </summary>
-    public int CheckableWeaponCount =>
-        CountWeaponsWithChecks(unowned_items)
-        + CountWeaponsWithChecks(obtained_Items)
-        + CountWeaponsWithChecks(hasKill_Items);
+    public int CheckableWeaponCount
+    {
+        get
+        {
+            RefreshCounts();
+            return checkableWeaponCount;
+        }
+    }
+
+    private int earnedWeaponCount;
+    private int checkableWeaponCount;
+
+    /// <summary>The <see cref="Version"/> the two counts above were taken at. -1 means never.</summary>
+    private int countsVersion = -1;
+
+    /// <summary>
+    /// Recounts only when the pools have changed since the last read. The overlay asks for
+    /// both numbers on every draw, and each is a walk over every weapon.
+    /// </summary>
+    private void RefreshCounts()
+    {
+        if (countsVersion == Version) return;
+
+        countsVersion = Version;
+        earnedWeaponCount = CountWeaponsWithChecks(hasKill_Items);
+        checkableWeaponCount = CountWeaponsWithChecks(unowned_items)
+            + CountWeaponsWithChecks(obtained_Items)
+            + earnedWeaponCount;
+    }
 
     /// <summary>How many of these weapons have an Archipelago check behind them.</summary>
     private int CountWeaponsWithChecks(List<GameObject> weapons)
@@ -517,6 +561,7 @@ public partial class RouletteState
         if (!obtained_Items.Remove(prefab)) return;
 
         hasKill_Items.Add(prefab);
+        MarkChanged();
         LogPool();
 
         // Before the check goes out, because the share earned does not depend on the room's
@@ -583,5 +628,6 @@ public partial class RouletteState
         unowned_items.Remove(prefab);
         obtained_Items.Remove(prefab);
         hasKill_Items.Add(prefab);
+        MarkChanged();
     }
 }

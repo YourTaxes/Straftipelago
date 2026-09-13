@@ -51,17 +51,36 @@ public class UnobtainableInteractionPatch
 [HarmonyPatch(typeof(ItemBehaviour), "OnFocus")]
 public class UnobtainableFocusPatch
 {
+    // OnFocus runs every frame the crosshair rests on an item, so the answer for the item it
+    // is resting on is kept, along with the popup line, until the gaze moves or the pools
+    // change. The pool version is what invalidates it: a weapon unlocked mid-gaze must stop
+    // reading as unobtainable.
+    private static ItemBehaviour focusedItem;
+    private static int focusedPoolVersion = -1;
+    private static bool focusedUnobtainable;
+    private static string focusedPopupText;
+
     static void Postfix(ItemBehaviour __instance)
     {
         try
         {
             RouletteState roulette = Plugin.RouletteState;
-            if (roulette == null || !roulette.IsUnobtainable(__instance)) return;
+            if (roulette == null) return;
+
+            if (!ReferenceEquals(__instance, focusedItem) || roulette.Version != focusedPoolVersion)
+            {
+                focusedItem = __instance;
+                focusedPoolVersion = roulette.Version;
+                focusedUnobtainable = roulette.IsUnobtainable(__instance);
+                focusedPopupText = focusedUnobtainable ? $"{__instance.weaponName.ToLower()} - Unobtainable" : null;
+            }
+
+            if (!focusedUnobtainable) return;
 
             PauseManager pauseManager = PauseManager.Instance;
             if (pauseManager == null || pauseManager.grabPopup == null) return;
 
-            pauseManager.grabPopup.text = $"{__instance.weaponName.ToLower()} - Unobtainable";
+            pauseManager.grabPopup.text = focusedPopupText;
         }
         catch (Exception error)
         {

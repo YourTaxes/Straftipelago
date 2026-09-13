@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using HarmonyLib;
 using Straftapelago.Finnegan_McD.org.Utils;
 using UnityEngine;
@@ -6,29 +5,16 @@ using UnityEngine;
 namespace Straftapelago.Finnegan_McD.org.Patches;
 
 /// <summary>
-/// Builds the roulette pool the first time a player object comes up, and times how long that
-/// takes. EnsureInitialized, not Reset: Awake fires for every player object every round, and a
-/// Reset here would wipe the pool mid-match.
+/// Builds the roulette pool the first time a player object comes up. EnsureInitialized, not
+/// Reset: Awake fires for every player object every round, and a Reset here would wipe the
+/// pool mid-match.
 /// </summary>
 [HarmonyPatch(typeof(PlayerPickup), "Awake")]
 public class PlayerPickupAwakePatch
 {
-    static void Prefix(PlayerPickup __instance)
+    static void Prefix()
     {
-        if (DiagnosticFlags.SkipRouletteResetOnAwake)
-        {
-            DiagLog.Log("PlayerPickup.Awake", "RouletteState init SKIPPED via DiagnosticFlags");
-            return;
-        }
-
-        Stopwatch sw = Stopwatch.StartNew();
         Plugin.RouletteState.EnsureInitialized();
-        sw.Stop();
-
-        DiagLog.Log("PlayerPickup.Awake",
-            $"RouletteState.EnsureInitialized() took {sw.Elapsed.TotalMilliseconds:F2}ms " +
-            $"obtained={Plugin.RouletteState.obtained_Items.Count} " +
-            $"obj={__instance.gameObject.name} {DiagLog.NetRoles()}");
     }
 }
 

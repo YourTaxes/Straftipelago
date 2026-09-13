@@ -122,8 +122,13 @@ internal static partial class VanillaSkin
     {
         if (string.IsNullOrEmpty(text)) return 0f;
 
-        return style.CalcSize(new GUIContent(text)).x + ShadowOffset();
+        // One GUIContent for every measurement: CalcSize only reads it, and the overlay
+        // measures several lines on every repaint.
+        MeasureContent.text = text;
+        return style.CalcSize(MeasureContent).x + ShadowOffset();
     }
+
+    private static readonly GUIContent MeasureContent = new GUIContent();
 
     /// <summary>The widest of <paramref name="texts"/>, or zero if there are none.</summary>
     public static float MeasureWidest(System.Collections.Generic.IEnumerable<string> texts, GUIStyle style)

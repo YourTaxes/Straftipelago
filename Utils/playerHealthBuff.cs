@@ -1,14 +1,12 @@
-using System;
-using HarmonyLib;
-using Straftapelago.Finnegan_McD.org.Utils;
 
-namespace Straftapelago.Finnegan_McD.org.Patches;
+namespace Straftapelago.Finnegan_McD.org.Utils;
 
 /// <summary>
 /// The room's Health filler item: sets the local player's health to <see cref="BuffedHealth"/>.
 /// Queued rather than applied where it is received, because the item arrives on the Archipelago
 /// client's websocket thread, and held until there is a living local player to give it to - one
 /// spent on the menu, on a corpse or between rounds would be a buff the player never got.
+/// Pumped every frame by <see cref="Patches.PlayerHealthUpdatePatch"/>.
 /// </summary>
 internal static class PlayerHealthBuff
 {
@@ -39,7 +37,7 @@ internal static class PlayerHealthBuff
     private static readonly object Gate = new();
 
     /// <summary>
-    /// Called every frame from <see cref="PlayerHealthBuffPatch"/> with the local player's
+    /// Called every frame from <see cref="Patches.PlayerHealthUpdatePatch"/> with the local player's
     /// health. Spends one pending buff if there is one and the player can use it.
     /// </summary>
     public static void Apply(PlayerHealth playerHealth)
@@ -74,30 +72,5 @@ internal static class PlayerHealthBuff
         // not a ServerRpc: if vanilla clamps it back down these two numbers show it.
         Plugin.BepinLogger.LogInfo($"[Health] Archipelago Health buff: {before} -> {playerHealth.health}");
         Killfeed.Write("Archipelago patched you up");
-    }
-}
-
-/// <summary>
-/// Pumps the Health buff queue every frame, so a buff received from the room is applied as soon
-/// as the player is in a state to use it. A postfix, so vanilla finishes this frame's own health
-/// bookkeeping first.
-/// </summary>
-[HarmonyPatch(typeof(PlayerHealth), "Update")]
-public class PlayerHealthBuffPatch
-{
-    static void Postfix(PlayerHealth __instance)
-    {
-        try
-        {
-            if (__instance == null || !__instance.IsOwner) return;
-
-            PlayerHealthBuff.Apply(__instance);
-        }
-        catch (Exception error)
-        {
-            // Swallowed on purpose, like every other patch on this method: a failed buff must
-            // not abandon the rest of the player's Update.
-            Plugin.BepinLogger.LogError($"[Health] Failed to apply a Health buff{Environment.NewLine}{error}");
-        }
     }
 }

@@ -46,12 +46,6 @@ public class GrabPatches
         // local player did the grabbing. It rolls from its own pool.
         if (pp == null || !pp.IsOwner) return;
 
-        if (DiagnosticFlags.SkipRouletteRoll)
-        {
-            DiagLog.RR(rollId, "grab", "roll SKIPPED via DiagnosticFlags.SkipRouletteRoll");
-            return;
-        }
-
         GameObject prefab = Plugin.RouletteState.Roll(rollId);
         if (prefab == null)
         {

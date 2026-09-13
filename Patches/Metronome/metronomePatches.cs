@@ -46,30 +46,6 @@ internal static class StunWatch
 }
 
 /// <summary>
-/// Runs the Metronome countdown down, one frame at a time, off the local player's
-/// PlayerHealth.Update.
-/// </summary>
-[HarmonyPatch(typeof(PlayerHealth), "Update")]
-public class PlayerHealthMetronomeTickPatch
-{
-    static void Postfix(PlayerHealth __instance)
-    {
-        try
-        {
-            // Repeated here because a postfix still runs after vanilla's own IsOwner return.
-            if (__instance == null || !__instance.IsOwner) return;
-
-            MetronomeTrap.Tick(__instance);
-        }
-        catch (Exception error)
-        {
-            // A countdown that cannot tick must not abandon the rest of the player's Update.
-            Plugin.BepinLogger.LogError($"[Metronome] Failed to tick the countdown{Environment.NewLine}{error}");
-        }
-    }
-}
-
-/// <summary>
 /// Notices a stun starting, so the Metronome countdown can carry on through it. Vanilla hands
 /// <c>UnfreezePlayer(stunTime)</c> straight to StartCoroutine, so the frame this returns on is
 /// the frame the stun begins.

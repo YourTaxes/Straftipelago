@@ -1,8 +1,5 @@
 ﻿using System;
-using System.Diagnostics;
 using System.IO;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using BepInEx;
 using BepInEx.Logging;
 using HarmonyLib;
@@ -55,36 +52,6 @@ public class Plugin : BaseUnityPlugin
     // a static reference keeps it alive across scene changes on its own.
     public static RouletteState RouletteState;
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr GetStdHandle(int nStdHandle);
-
-    [DllImport("kernel32.dll")]
-    private static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
-
-    [DllImport("kernel32.dll")]
-    private static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
-
-    private const int STD_INPUT_HANDLE = -10;
-    private const uint ENABLE_QUICK_EDIT_MODE = 0x0040;
-    private const uint ENABLE_EXTENDED_FLAGS = 0x0080;
-
-    // Windows consoles default to QuickEdit Mode, which suspends the process's writes to the
-    // console the moment the window is clicked into a selection - and since Unity's game loop is
-    // the thread doing the logging, that freezes the whole game until the selection is
-    // cancelled. Clearing the flag prevents that for the lifetime of the console window.
-    // ENABLE_EXTENDED_FLAGS has to be set for the QuickEdit bit to take effect at all. Nothing
-    // calls this at the moment; Awake is where it belongs when it is wanted.
-    private static void DisableQuickEdit()
-    {
-        IntPtr handle = GetStdHandle(STD_INPUT_HANDLE);
-        if (handle == IntPtr.Zero || handle == new IntPtr(-1)) return;
-        if (!GetConsoleMode(handle, out uint mode)) return;
-
-        mode &= ~ENABLE_QUICK_EDIT_MODE;
-        mode |= ENABLE_EXTENDED_FLAGS;
-        SetConsoleMode(handle, mode);
-    }
-
     private void Awake()
     {
         // BepInEx only surfaces a failed Awake as a terse chainloader line, and a partly
@@ -136,6 +103,13 @@ public class Plugin : BaseUnityPlugin
                             BepinLogger.LogError("Asset 'roulette_item' not found in bundle. Assets present: " +
                                 string.Join(", ", bundle.GetAllAssetNames()));
                         }
+                        else
+                        {
+                            // Once, on the prefab asset itself: every Roulette Item the game
+                            // spawns is instantiated from this object, so a colour pass and a
+                            // field write here reach all of them without per-instance work.
+                            RouletteItemPrefabSetup.Apply(RouletteItemPrefab);
+                        }
                     }
                     else
                         BepinLogger.LogError("Failed to load asset bundle from embedded resource");
@@ -163,14 +137,6 @@ public class Plugin : BaseUnityPlugin
                 BepinLogger.LogError($"Failed to register the Archipelago chat commands: {e}");
             }
 
-            try
-            {
-                ArchipelagoConsole.Awake();
-            } catch (Exception e)
-            {
-                BepinLogger.LogError($"Failed to initialize ArchipelagoConsole: {e}");
-            }
-            
             // Before PatchAll, so the roulette's RPCs are registered by the time any patch
             // could fire. Mycelium is loaded ahead of this plugin by the BepInDependency above.
             try
@@ -231,15 +197,4 @@ public class Plugin : BaseUnityPlugin
                 $"partially-loaded state and its GUI/patches may not work.{Environment.NewLine}{e}");
         }
     }
-
-
-
-    // Logs when the game destroys the BepInEx_Manager this component lives on.
-    private void OnDestroy()
-    {
-        Logger.LogInfo($"[Diag:Host] BepInEx_Manager component destroyed on frame {Time.frameCount} " +
-            "(expected in this game; the overlay lives on its own GameObject).");
-    }
-
-
 }

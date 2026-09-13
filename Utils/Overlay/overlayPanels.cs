@@ -44,14 +44,64 @@ internal static partial class OverlayPanels
     /// for their first kill at the top, then the ones that earned their check with a tick.
     /// Confined to the left half of the screen so it cannot cover the pause menu.
     /// </summary>
+    /// <summary>
+    /// The list's lines and measurements, rebuilt only when the pools or the screen change.
+    /// Building them means a display-name lookup and a CalcSize per weapon, and this panel is
+    /// drawn every repaint the pause menu is up.
+    /// </summary>
+    private static readonly List<string> weaponEntryTexts = new();
+    private static int weaponEntriesVersion = -1;
+    private static int weaponEntriesScreenHeight = -1;
+    private static float weaponEntryWidth;
+    private static float weaponHeaderWidth;
+    private static string weaponHeader = "";
+
+    private static void RefreshWeaponEntries(RouletteState roulette)
+    {
+        if (roulette.Version == weaponEntriesVersion && Screen.height == weaponEntriesScreenHeight) return;
+
+        weaponEntriesVersion = roulette.Version;
+        weaponEntriesScreenHeight = Screen.height;
+        weaponEntryTexts.Clear();
+
+        int firstKillEarned = roulette.obtained_Items.Count;
+        AppendWeaponEntries(roulette.obtained_Items, firstKillEarned);
+        AppendWeaponEntries(roulette.hasKill_Items, firstKillEarned);
+
+        weaponHeader = $"Unlocked weapons ({weaponEntryTexts.Count})";
+        weaponEntryWidth = VanillaSkin.MeasureWidest(weaponEntryTexts, VanillaSkin.Entry);
+        weaponHeaderWidth = VanillaSkin.MeasureWidth(weaponHeader, VanillaSkin.Header);
+    }
+
+    /// <summary>
+    /// One numbered line per weapon, continuing the numbering from whatever is already in the
+    /// list, with a tick on every line at or past <paramref name="firstKillEarned"/>.
+    /// </summary>
+    private static void AppendWeaponEntries(List<GameObject> weapons, int firstKillEarned)
+    {
+        foreach (GameObject weapon in weapons)
+        {
+            int position = weaponEntryTexts.Count;
+
+            // U+2713. If a future Unity build's default GUI font does not carry it the entry
+            // shows a box, in which case swap this for a plain "*".
+            string killMark = position >= firstKillEarned ? " ✓" : "";
+
+            // DisplayNameOf, not weapon.name: the pool is keyed on prefab names, several of
+            // which are nothing like what the game calls the weapon on screen.
+            weaponEntryTexts.Add(
+                $"{position + 1}. {(weapon == null ? "<missing>" : RouletteState.DisplayNameOf(weapon))}{killMark}");
+        }
+    }
+
     internal static void DrawObtainedWeapons()
     {
         RouletteState roulette = Plugin.RouletteState;
         if (roulette == null) return;
 
-        var obtained = new List<GameObject>(roulette.obtained_Items);
-        int firstKillEarned = obtained.Count;
-        obtained.AddRange(roulette.hasKill_Items);
+        RefreshWeaponEntries(roulette);
+        List<string> entryTexts = weaponEntryTexts;
+        int weaponTotal = entryTexts.Count;
 
         float panelLeft = Screen.width * PanelLeftFraction;
         float panelTop = Screen.height * WeaponPanelTopFraction;
@@ -59,27 +109,10 @@ internal static partial class OverlayPanels
         float entryHeight = Screen.height * EntryHeightFraction;
         float headerHeight = entryHeight * 1.5f;
 
-        // Every line is built up front, before anything is measured or placed, because the
-        // column width comes from the longest of them.
-        var entryTexts = new List<string>(obtained.Count);
-        for (int i = 0; i < obtained.Count; i++)
-        {
-            GameObject weapon = obtained[i];
-
-            // U+2713. If a future Unity build's default GUI font does not carry it the entry
-            // shows a box, in which case swap this for a plain "*".
-            string killMark = i >= firstKillEarned ? " ✓" : "";
-
-            // DisplayNameOf, not weapon.name: the pool is keyed on prefab names, several of
-            // which are nothing like what the game calls the weapon on screen.
-            entryTexts.Add(
-                $"{i + 1}. {(weapon == null ? "<missing>" : RouletteState.DisplayNameOf(weapon))}{killMark}");
-        }
-
         // Packed to the width the longest weapon line actually needs, which is what buys a
         // third column inside the same left-half budget.
         float columnGap = Screen.width * ColumnGapFraction;
-        float entryWidth = VanillaSkin.MeasureWidest(entryTexts, VanillaSkin.Entry);
+        float entryWidth = weaponEntryWidth;
         float columnStride = entryWidth + columnGap;
 
         float maxPanelWidth = Screen.width * 0.5f - panelLeft;
@@ -97,20 +130,18 @@ internal static partial class OverlayPanels
         // a panel that runs off the screen is worse than one that says how much it is hiding.
         // The "... and N more" line costs an entry, so it comes out of the capacity.
         int capacity = entriesPerColumn * maxColumns;
-        bool truncated = obtained.Count > capacity;
-        int weaponCount = truncated ? capacity - 1 : obtained.Count;
+        bool truncated = weaponTotal > capacity;
+        int weaponCount = truncated ? capacity - 1 : weaponTotal;
         int entryCount = weaponCount + (truncated ? 1 : 0);
 
         int columnCount = Mathf.Max(1, Mathf.CeilToInt(entryCount / (float)entriesPerColumn));
         int rowCount = Mathf.Min(Mathf.Max(entryCount, 1), entriesPerColumn);
 
-        string header = $"Unlocked weapons ({obtained.Count})";
-
         // The header can be wider than a single narrow column, so it gets a say in the panel
         // width rather than being clipped by it, but never past the left-half budget.
         float panelWidth = Mathf.Min(maxPanelWidth, Mathf.Max(
             columnCount * columnStride - columnGap + panelPadding * 2f,
-            VanillaSkin.MeasureWidth(header, VanillaSkin.Header) + panelPadding * 2f));
+            weaponHeaderWidth + panelPadding * 2f));
         float panelHeight = headerHeight + rowCount * entryHeight + entryHeight * 0.5f;
 
         VanillaSkin.Box(new Rect(panelLeft, panelTop, panelWidth, panelHeight));
@@ -119,18 +150,18 @@ internal static partial class OverlayPanels
         float firstEntryTop = panelTop + headerHeight;
 
         VanillaSkin.Label(new Rect(firstColumnLeft, panelTop + entryHeight * 0.25f,
-            panelWidth - panelPadding * 2f, headerHeight), header, VanillaSkin.Header);
+            panelWidth - panelPadding * 2f, headerHeight), weaponHeader, VanillaSkin.Header);
 
-        for (int i = 0; i < entryCount; i++)
+        for (int entry = 0; entry < entryCount; entry++)
         {
             // Fill each column top to bottom before starting the next one, so the numbering
             // reads down a column.
-            float entryLeft = firstColumnLeft + i / entriesPerColumn * columnStride;
-            float entryTop = firstEntryTop + i % entriesPerColumn * entryHeight;
+            float entryLeft = firstColumnLeft + entry / entriesPerColumn * columnStride;
+            float entryTop = firstEntryTop + entry % entriesPerColumn * entryHeight;
 
-            string text = truncated && i == entryCount - 1
-                ? $"... and {obtained.Count - weaponCount} more"
-                : entryTexts[i];
+            string text = truncated && entry == entryCount - 1
+                ? $"... and {weaponTotal - weaponCount} more"
+                : entryTexts[entry];
 
             VanillaSkin.Label(new Rect(entryLeft, entryTop, entryWidth, entryHeight), text,
                 VanillaSkin.Entry);

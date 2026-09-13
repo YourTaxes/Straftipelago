@@ -1,4 +1,3 @@
-using Straftapelago.Finnegan_McD.org.Patches;
 using UnityEngine;
 
 namespace Straftapelago.Finnegan_McD.org.Utils;
@@ -8,11 +7,52 @@ namespace Straftapelago.Finnegan_McD.org.Utils;
 internal static partial class OverlayPanels
 {
     /// <summary>
+    /// One measured string, remeasured only when the text or the screen height changes. Every
+    /// box in this row is drawn every repaint, and CalcSize is the expensive part of drawing
+    /// one, so each label keeps its own.
+    /// </summary>
+    private sealed class MeasuredText
+    {
+        private string text;
+        private int screenHeight = -1;
+        private float width;
+
+        public float Width(string newText, GUIStyle style)
+        {
+            if (newText != text || screenHeight != Screen.height)
+            {
+                text = newText;
+                screenHeight = Screen.height;
+                width = VanillaSkin.MeasureWidth(newText, style);
+            }
+
+            return width;
+        }
+    }
+
+    /// <summary>
     /// The widest countdown box drawn on the last pass, or zero when none was, so
     /// <see cref="DrawLastWeapon"/> knows where the row currently ends. Written by
     /// <see cref="DrawCountdowns"/>, which is why the overlay calls the two in that order.
     /// </summary>
     private static float countdownRowWidth;
+
+    private const string MadeInHeavenLabel = "Made in Heaven";
+    private const string MetronomeLabel = "Metronome";
+    private const string LastUnlockedHeader = "Last unlocked";
+
+    private static readonly MeasuredText madeInHeavenLabelWidth = new();
+    private static readonly MeasuredText madeInHeavenTimeWidth = new();
+    private static readonly MeasuredText metronomeLabelWidth = new();
+    private static readonly MeasuredText metronomeTimeWidth = new();
+    private static readonly MeasuredText lastUnlockedHeaderWidth = new();
+    private static readonly MeasuredText lastUnlockedNameWidth = new();
+
+    /// <summary>The "Ns left" line's last whole-second value, so the string is rebuilt once a second.</summary>
+    private static int madeInHeavenSecondsShown = -1;
+    private static int metronomeSecondsShown = -1;
+    private static string madeInHeavenTimeText = "";
+    private static string metronomeTimeText = "";
 
     /// <summary>
     /// The Metronome and Made in Heaven countdowns, in the top left corner while one is
@@ -26,11 +66,15 @@ internal static partial class OverlayPanels
         if (MadeInHeaven.Running)
         {
             countdownRowWidth = Mathf.Max(countdownRowWidth,
-                DrawCountdownPanel(slot++, "Made in Heaven", MadeInHeaven.SecondsRemaining));
+                DrawCountdownPanel(slot++, MadeInHeavenLabel, MadeInHeaven.SecondsRemaining,
+                    madeInHeavenLabelWidth, madeInHeavenTimeWidth,
+                    ref madeInHeavenSecondsShown, ref madeInHeavenTimeText));
         }
 
         countdownRowWidth = Mathf.Max(countdownRowWidth,
-            DrawCountdownPanel(slot, "Metronome", MetronomeTrap.SecondsRemaining));
+            DrawCountdownPanel(slot, MetronomeLabel, MetronomeTrap.SecondsRemaining,
+                metronomeLabelWidth, metronomeTimeWidth,
+                ref metronomeSecondsShown, ref metronomeTimeText));
     }
 
     /// <summary>
@@ -39,7 +83,8 @@ internal static partial class OverlayPanels
     /// both and get only the ones that are running.
     /// </summary>
     /// <returns>How wide the box was, or zero when none was drawn.</returns>
-    private static float DrawCountdownPanel(int slot, string label, float secondsRemaining)
+    private static float DrawCountdownPanel(int slot, string label, float secondsRemaining,
+        MeasuredText labelWidth, MeasuredText timeWidth, ref int secondsShown, ref string timeText)
     {
         if (secondsRemaining <= 0f) return 0f;
 
@@ -50,13 +95,18 @@ internal static partial class OverlayPanels
 
         // Ceiling rather than rounding, so the last second is shown as 1 for the whole of
         // itself and the box goes away on 0 instead of sitting there reading zero.
-        string timeText = $"{Mathf.CeilToInt(secondsRemaining)}s left";
+        int seconds = Mathf.CeilToInt(secondsRemaining);
+        if (seconds != secondsShown)
+        {
+            secondsShown = seconds;
+            timeText = $"{seconds}s left";
+        }
 
         // Sized to the two lines rather than to a fraction of the screen. The label is the
         // wider of the two in every case, so the box does not breathe as the digits drop.
         float entryWidth = Mathf.Max(
-            VanillaSkin.MeasureWidth(label, VanillaSkin.Header),
-            VanillaSkin.MeasureWidth(timeText, VanillaSkin.Entry));
+            labelWidth.Width(label, VanillaSkin.Header),
+            timeWidth.Width(timeText, VanillaSkin.Entry));
         float panelWidth = entryWidth + panelPadding * 2f;
         float panelHeight = headerHeight + entryHeight + entryHeight * 0.5f;
 
@@ -86,15 +136,13 @@ internal static partial class OverlayPanels
         string weaponName = Plugin.RouletteState?.LastUnlockedWeapon;
         if (string.IsNullOrEmpty(weaponName)) return;
 
-        const string Header = "Last unlocked";
-
         float panelPadding = Screen.width * PanelPaddingFraction;
         float entryHeight = Screen.height * EntryHeightFraction;
         float headerHeight = entryHeight * 1.5f;
 
         float entryWidth = Mathf.Max(
-            VanillaSkin.MeasureWidth(Header, VanillaSkin.Header),
-            VanillaSkin.MeasureWidth(weaponName, VanillaSkin.Entry));
+            lastUnlockedHeaderWidth.Width(LastUnlockedHeader, VanillaSkin.Header),
+            lastUnlockedNameWidth.Width(weaponName, VanillaSkin.Entry));
         float panelWidth = entryWidth + panelPadding * 2f;
         float panelHeight = headerHeight + entryHeight + entryHeight * 0.5f;
 
@@ -109,7 +157,7 @@ internal static partial class OverlayPanels
         float entryLeft = panelLeft + panelPadding;
 
         VanillaSkin.Label(new Rect(entryLeft, panelTop + entryHeight * 0.25f, entryWidth, headerHeight),
-            Header, VanillaSkin.Header);
+            LastUnlockedHeader, VanillaSkin.Header);
         VanillaSkin.Label(new Rect(entryLeft, panelTop + headerHeight, entryWidth, entryHeight),
             weaponName, VanillaSkin.Entry);
     }

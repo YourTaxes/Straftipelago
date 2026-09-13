@@ -1,3 +1,4 @@
+using System.Reflection;
 using BepInEx;
 using ChatCommands;
 using HarmonyLib;
@@ -17,10 +18,12 @@ public static class ArchipelagoConsole
 {
     private static readonly MainThreadQueue Queue = new(TryWriteToChat, "Console");
 
-    /// <summary>Kept for the call in <see cref="Plugin.Awake"/>; there is nothing to set up.</summary>
-    public static void Awake()
-    {
-    }
+    /// <summary>
+    /// ChatCommands' private message prefab field, resolved once. Null when ChatCommands has
+    /// renamed it, in which case <see cref="ChatReady"/> assumes ready and lets the write decide.
+    /// </summary>
+    private static readonly FieldInfo MessageTemplateField =
+        AccessTools.Field(typeof(ChatPatches), "m_messageTemplate");
 
     public static void LogMessage(string message)
     {
@@ -54,17 +57,11 @@ public static class ArchipelagoConsole
     /// </summary>
     private static bool ChatReady()
     {
-        try
-        {
-            return Traverse.Create(typeof(ChatPatches))
-                .Field("m_messageTemplate").GetValue<GameObject>() != null;
-        }
-        catch
-        {
-            // The field is private, so it is not part of ChatCommands' API and a future version
-            // may rename it. Assume ready and let the write itself decide; the queue reports a
-            // throw and moves on rather than jamming.
-            return true;
-        }
+        // The field is private, so it is not part of ChatCommands' API and a future version may
+        // rename it. Assume ready and let the write itself decide; the queue reports a throw
+        // and moves on rather than jamming.
+        if (MessageTemplateField == null) return true;
+
+        return MessageTemplateField.GetValue(null) as GameObject != null;
     }
 }

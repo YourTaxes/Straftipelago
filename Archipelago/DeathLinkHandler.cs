@@ -191,7 +191,7 @@ public class DeathLinkHandler
     }
 
     /// <summary>
-    /// Called every frame from <see cref="Patches.PlayerHealthDeathLinkKillPatch"/>. Kills the
+    /// Called every frame from <see cref="Patches.PlayerHealthUpdatePatch"/>. Kills the
     /// local player the way falling out of the map does, if a death is waiting and they are in a
     /// state to receive it.
     /// </summary>
@@ -297,7 +297,7 @@ public class DeathLinkHandler
     }
 
     /// <summary>
-    /// Called from <see cref="Patches.PlayerHealthDeathLinkSendPatch"/> on the one frame the
+    /// Called from <see cref="Patches.PlayerHealthUpdatePatch"/> on the one frame the
     /// local player's death is visible, whatever caused it.
     /// </summary>
     public void LocalPlayerDied(PlayerHealth playerHealth)

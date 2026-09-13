@@ -100,6 +100,11 @@ internal class ArchipelagoOverlay : MonoBehaviour
 
     private void OnGUI()
     {
+        // Unity calls OnGUI once per event - Layout, Repaint, and every input event - and only
+        // the Repaint pass puts pixels on screen. Every draw here is a GUI.* call with an
+        // explicit Rect, none of which needs the Layout pass, so the rest are skipped whole.
+        if (Event.current.type != EventType.Repaint) return;
+
         if (!loggedFirstOnGui)
         {
             loggedFirstOnGui = true;

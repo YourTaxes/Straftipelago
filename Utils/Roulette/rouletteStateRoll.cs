@@ -129,12 +129,8 @@ public partial class RouletteState
     {
         EnsureInitialized();
 
-        // Timed so the cost of a real roll is a number in the log next to the self-test's,
-        // which draws through this same path many thousands of times.
-        Stopwatch rollTimer = Stopwatch.StartNew();
-
-        int compactedNulls = obtained_Items.RemoveAll(item => item == null)
-            + hasKill_Items.RemoveAll(item => item == null);
+        int compactedNulls = obtained_Items.RemoveAll(IsDestroyed) + hasKill_Items.RemoveAll(IsDestroyed);
+        if (compactedNulls > 0) MarkChanged();
 
         List<GameObject> pool = ChoosePool(out bool wantNew);
         bool drewNew = pool == obtained_Items;
@@ -144,13 +140,11 @@ public partial class RouletteState
         int slotCount = slots.Count;
 
         GameObject prefab = DrawFromSlots(slots, out bool drewGroup, out _);
-        rollTimer.Stop();
 
         if (prefab == null)
         {
             DiagLog.RR(rollId, "roll",
-                $"slotCount=0 wantNew={wantNew} compactedNulls={compactedNulls} " +
-                $"rollMs={rollTimer.Elapsed.TotalMilliseconds:F3} — nothing to roll");
+                $"slotCount=0 wantNew={wantNew} compactedNulls={compactedNulls} — nothing to roll");
             return null;
         }
 
@@ -167,10 +161,16 @@ public partial class RouletteState
             $"prefab={prefab.name} " +
             $"prefabId={(nob == null ? "NO-NETWORKOBJECT" : nob.PrefabId.ToString())} " +
             $"collectionId={(nob == null ? "n/a" : nob.SpawnableCollectionId.ToString())} " +
-            $"compactedNulls={compactedNulls} rollMs={rollTimer.Elapsed.TotalMilliseconds:F3}");
+            $"compactedNulls={compactedNulls}");
 
         return prefab;
     }
+
+    /// <summary>
+    /// Unity's == on a destroyed object, as a named predicate so the two RemoveAll calls above
+    /// share one delegate instead of allocating a lambda each per roll.
+    /// </summary>
+    private static readonly Predicate<GameObject> IsDestroyed = item => item == null;
 
     /// <summary>
     /// Draws many times through the real selection path and reports the spread against what the
@@ -180,8 +180,8 @@ public partial class RouletteState
     public void SelfTest(int iterations)
     {
         // Compacted the way Roll compacts, so the slots built below match what a roll would see.
-        obtained_Items.RemoveAll(item => item == null);
-        hasKill_Items.RemoveAll(item => item == null);
+        obtained_Items.RemoveAll(IsDestroyed);
+        hasKill_Items.RemoveAll(IsDestroyed);
 
         int newCount = obtained_Items.Count;
         int killCount = hasKill_Items.Count;
@@ -320,7 +320,10 @@ public partial class RouletteState
         return longestSoFar;
     }
 
-    /// <summary>Numbered dump of the local player's unlocks. Called on every change and every roll.</summary>
+    /// <summary>
+    /// Numbered dump of the local player's unlocks, at Debug level. Called on every change to
+    /// the pools, which is an event - a grant, a kill, a rebuild - and never a frame.
+    /// </summary>
     public void LogPool()
     {
         // A rebuild makes many changes in a row and dumps the result itself once it is done.
@@ -331,7 +334,7 @@ public partial class RouletteState
         string killList = string.Join(Environment.NewLine,
             hasKill_Items.Select((item, index) => $"  [{index}] {(item == null ? "null" : item.name)}"));
 
-        Plugin.BepinLogger.LogInfo(
+        Plugin.BepinLogger.LogDebug(
             $"obtained_Items ({obtained_Items.Count} total, {hasKill_Items.Count} already earned a kill, " +
             $"{unowned_items.Count} still locked):{Environment.NewLine}{obtainedList}" +
             $"{(hasKill_Items.Count == 0 ? "" : $"{Environment.NewLine}hasKill_Items:{Environment.NewLine}{killList}")}");
